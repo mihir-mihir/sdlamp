@@ -42,13 +42,22 @@ static void panic_and_abort(const char* title, const char* text) {
 // eventually might want to put these in a struct so one "thing" is getting passed around, not a lot of individual
 // globals
 
-static SDL_AudioStream* stream = NULL;
+static SDL_AudioStream* stream = NULL; // don't have to initialize stack variable to null?
 static SDL_AudioSpec desired;
 static Uint8* wavbuf = NULL;
 static Uint32 wavlen = 0;
+
+// !!! FIXME: you don't need a global for this, can use static Uint8 cb* inside of event loop - using "static"
+// ensures that memory is only allocated for it once, so you're not reallocating every time the loop runs
+// one instance of the variable is shared across all calls to the function that the static variable is declared in
 static Uint8* converted_buf[32 * 1024];  // 32 kB
 
+// FIXME!!! can have this function return an audio stream and get rid of the stream global
 static SDL_bool init_audio_stream(char* fname) {
+
+    // free the stream pointer first in case it already exists so you don't leak memory
+    SDL_FreeAudioStream(stream);
+    stream = NULL;
     SDL_AudioSpec wavspec;
     SDL_FreeWAV(wavbuf);  // if you pass SDL_free a null it's a noop
     wavbuf = NULL;
@@ -60,20 +69,32 @@ static SDL_bool init_audio_stream(char* fname) {
 
     stream = SDL_NewAudioStream(
             wavspec.format, wavspec.channels, wavspec.freq, desired.format, desired.channels, desired.freq);
+
+    // FIXME!!! error checking (if !stream)
     return SDL_TRUE;
 }
 
 static SDL_bool put_wavbuf_in_stream() {
     SDL_AudioStreamClear(stream);
+
+    // error condition can happen if you run out of memory
     if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
         return SDL_FALSE;
+        // maybe panic and abort here? bc you want to exit if you run out of memory 
     }
     SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
     return SDL_TRUE;
 }
 
 static void send_audio_to_device_queue_from_stream() {
+    // in the video there's a var new_bytes = SDL_min(SDL_AudioStreamAvailable(stream), sizeof(converted_buf))
+    // might not need this var though bc len parameter in SDL_AudioStreamGet is specified as "max bytes to fill",
+    // not exact bytes to fill, so if there are fewer bytes remaining in the stream than the number of bytes in the
+    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of 
+    // SDL_AudioStreamGet (good to know about SDL_min function though)
+
+    // it looks like we do need to use "gotten_bytes" to pass into SDL_QueueAudio function
     int gotten_bytes = SDL_AudioStreamGet(stream, converted_buf, sizeof(converted_buf));
     if (gotten_bytes == -1) {
         panic_and_abort("failed to get converted data", SDL_GetError());
@@ -145,23 +166,17 @@ int main() {
                 case SDL_MOUSEBUTTONDOWN: {
                     const SDL_Point pt = {e.button.x, e.button.y};
                     if (SDL_PointInRect(&pt, &rewind_rect)) {
-                        SDL_AudioStreamClear(stream);
-
-                        if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
-                            SDL_ShowSimpleMessageBox(
-                                    SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
-                        }
-                        // convert all of the  data so it's available with SDL_AudioStreamGet
-                        SDL_AudioStreamFlush(stream);
-
-                        int gotten_bytes = SDL_AudioStreamPut(stream, converted_buf, sizeof(converted_buf));
+                        // !!! FIXME: if you spam restart button takes a while after the most recent press to 
+                        // play the audio - think this is because of multiple calls to convert the entire wav file
+                        SDL_ClearQueuedAudio(audio_device);
+                        put_wavbuf_in_stream();
 
                         // need to make sure that audio device exists - it won't if no file
                         // was dropped or if there was a problem opening one
-                        if (audio_device) {
-                            SDL_ClearQueuedAudio(audio_device);
-                            SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
-                        }
+                        // if (audio_device) {
+                        //     SDL_ClearQueuedAudio(audio_device);
+                        //     SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
+                        // }
                     } else if (SDL_PointInRect(&pt, &pause_rect)) {
                         paused = paused ? SDL_FALSE : SDL_TRUE;
                         if (audio_device) {
