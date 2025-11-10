@@ -14,9 +14,13 @@ less)
     - this is how we "fake" desired audiospec?
     - now only the stream needs to be global
 
-
-
-
+NOTES FOR VOLUME CONTROL VIDEO
+--------------------------------
+- sdl mouse motion event
+- sample frames - 2 samples make up a frame in stereo, we are just going to work on all samples without worrying about
+frames
+- in converted_buf, each sample is a float (4 bytes) - remember converted_buf is type Uint8* though, so need to cast to
+float* to go sample by sample in for loop
 */
 
 #include "SDL.h"
@@ -42,7 +46,7 @@ static void panic_and_abort(const char* title, const char* text) {
 // eventually might want to put these in a struct so one "thing" is getting passed around, not a lot of individual
 // globals
 
-static SDL_AudioStream* stream = NULL; // don't have to initialize stack variable to null?
+static SDL_AudioStream* stream = NULL;  // don't have to initialize stack variable to null?
 static SDL_AudioSpec desired;
 static Uint8* wavbuf = NULL;
 static Uint32 wavlen = 0;
@@ -52,7 +56,9 @@ static Uint32 wavlen = 0;
 // one instance of the variable is shared across all calls to the function that the static variable is declared in
 static Uint8* converted_buf[32 * 1024];  // 32 kB
 
-// FIXME!!! can have this function return an audio stream and get rid of the stream global
+float volume_level = 1.0f;
+
+// FIXME!!! can have this function return an audio stream and get rid of the stream global?
 static SDL_bool init_audio_stream(char* fname) {
 
     // free the stream pointer first in case it already exists so you don't leak memory
@@ -81,7 +87,7 @@ static SDL_bool put_wavbuf_in_stream() {
     if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
         return SDL_FALSE;
-        // maybe panic and abort here? bc you want to exit if you run out of memory 
+        // maybe panic and abort here? bc you want to exit if you run out of memory
     }
     SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
     return SDL_TRUE;
@@ -91,13 +97,19 @@ static void send_audio_to_device_queue_from_stream() {
     // in the video there's a var new_bytes = SDL_min(SDL_AudioStreamAvailable(stream), sizeof(converted_buf))
     // might not need this var though bc len parameter in SDL_AudioStreamGet is specified as "max bytes to fill",
     // not exact bytes to fill, so if there are fewer bytes remaining in the stream than the number of bytes in the
-    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of 
+    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of
     // SDL_AudioStreamGet (good to know about SDL_min function though)
 
     // it looks like we do need to use "gotten_bytes" to pass into SDL_QueueAudio function
     int gotten_bytes = SDL_AudioStreamGet(stream, converted_buf, sizeof(converted_buf));
     if (gotten_bytes == -1) {
         panic_and_abort("failed to get converted data", SDL_GetError());
+    }
+    float* converted_samples = (float*)converted_buf;
+    int nsamples = gotten_bytes / sizeof(float);
+    // changing volume based on volume_level here:
+    for (int i = 0; i < nsamples; i++) {
+        converted_samples[i] *= volume_level;
     }
     SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
 }
@@ -147,6 +159,13 @@ int main() {
 
     const SDL_Rect rewind_rect = {110, 100, 100, 100};
     const SDL_Rect pause_rect = {430, 100, 100, 100};
+    const SDL_Rect volume_rect = {70, 400, 500, 20};
+
+    // no copy constructor?
+    SDL_Rect volume_knob;
+    SDL_memcpy(&volume_knob, &volume_rect, sizeof(SDL_Rect));
+    volume_knob.w = 10;
+    volume_knob.x = volume_rect.x + volume_level * volume_rect.w - (volume_knob.w / 2);
 
     int green = 0;
     SDL_bool keep_going = SDL_TRUE;
@@ -166,17 +185,11 @@ int main() {
                 case SDL_MOUSEBUTTONDOWN: {
                     const SDL_Point pt = {e.button.x, e.button.y};
                     if (SDL_PointInRect(&pt, &rewind_rect)) {
-                        // !!! FIXME: if you spam restart button takes a while after the most recent press to 
+                        // !!! FIXME: if you spam restart button takes a while after the most recent press to
                         // play the audio - think this is because of multiple calls to convert the entire wav file
                         SDL_ClearQueuedAudio(audio_device);
                         put_wavbuf_in_stream();
 
-                        // need to make sure that audio device exists - it won't if no file
-                        // was dropped or if there was a problem opening one
-                        // if (audio_device) {
-                        //     SDL_ClearQueuedAudio(audio_device);
-                        //     SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
-                        // }
                     } else if (SDL_PointInRect(&pt, &pause_rect)) {
                         paused = paused ? SDL_FALSE : SDL_TRUE;
                         if (audio_device) {
@@ -184,6 +197,16 @@ int main() {
                         }
                     }
                     break;
+                }
+
+                case SDL_MOUSEMOTION: {
+                    const SDL_Point pt = {e.motion.x, e.motion.y};
+                    if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &volume_rect)) {
+                        volume_level = (float)(e.motion.x - volume_rect.x) / volume_rect.w;
+                        volume_knob.x = pt.x - (volume_knob.w / 2);
+                        printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
+                    }
+                    break;  // without break here, i get bad access exception on loadwav above - running out of memory?
                 }
 
                 case SDL_DROPFILE: {
@@ -202,6 +225,11 @@ int main() {
 
         SDL_RenderFillRect(renderer, &rewind_rect);
         SDL_RenderFillRect(renderer, &pause_rect);
+        SDL_RenderFillRect(renderer, &volume_rect);
+        
+        SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
+        SDL_RenderFillRect(renderer, &volume_knob);
+
         SDL_RenderPresent(renderer);
 
         green = (green + 1) % 256;
