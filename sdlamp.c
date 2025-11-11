@@ -21,7 +21,20 @@ NOTES FOR VOLUME CONTROL VIDEO
 frames
 - in converted_buf, each sample is a float (4 bytes) - remember converted_buf is type Uint8* though, so need to cast to
 float* to go sample by sample in for loop
+
+
+NOTES FOR BALANCE CONTROL VIDEO (5)
+------------------------------------
+- goto failed (gotos in c vs c++)
+- stop audio instead of exiting in some cases?
+
+NOTES  FOR WINAMP INTRO VIDEO
+- surfaces cpu, textures gpu, utility for creating texture from surface (then free the surface)
+- SDL_RenderCopy
+
 */
+
+
 
 #include "SDL.h"
 
@@ -89,6 +102,8 @@ static SDL_bool put_wavbuf_in_stream() {
         return SDL_FALSE;
         // maybe panic and abort here? bc you want to exit if you run out of memory
     }
+
+    // !!! FIXME: error handling
     SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
     return SDL_TRUE;
 }
