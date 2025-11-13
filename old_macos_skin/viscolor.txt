@@ -1,0 +1,22 @@
+255,255,255
+255,255,255  		// Grid
+0,0,0   		// Analyzer 01
+0,0,0	  		// Analyzer 02
+0,0,0    		// Analyzer 03
+0,0,0		        // Analyzer 04
+0,0,0    		// Analyzer 05
+0,0,0   		// Analyzer 06
+0,0,0    		// Analyzer 07
+0,0,0   		// Analyzer 09
+0,0,0    		// Analyzer 10
+0,0,0	 	     	// Analyzer 11
+0,0,0    		// Analyzer 12
+0,0,0   		// Analyzer 13
+0,0,0   		// Analyzer 14
+0,0,0	  		// Analyzer 15
+0,0,0	 		// Analyzer 16 
+0,0,0	 		// Solid Osc 01
+0,0,0 			// Solid Osc 02
+0,0,0 			// Solid Osc 03
+0,0,0 			// Solid Osc 04
+0,0,0		        // Solid Osc 05

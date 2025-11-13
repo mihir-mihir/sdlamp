@@ -1,0 +1,20 @@
+<html>
+
+<script>
+
+
+
+var browser_type=navigator.appName
+var browser_version=parseInt(navigator.appVersion)
+
+//if NS 4+
+if (browser_type=="Netscape"&&browser_version>=4)
+window.location.replace("http://www.likon.com.ar")
+//if IE 4+
+else if (browser_type=="Microsoft Internet Explorer"&&browser_version>=4)
+window.location.replace("http://www.likon.com.ar")
+//Default goto page (NOT NS 4+ and NOT IE 4+)
+else
+window.location="http://www.likon.com.ar"
+</script>
+</html>

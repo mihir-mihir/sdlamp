@@ -31,10 +31,8 @@ NOTES FOR BALANCE CONTROL VIDEO (5)
 NOTES  FOR WINAMP INTRO VIDEO
 - surfaces cpu, textures gpu, utility for creating texture from surface (then free the surface)
 - SDL_RenderCopy
-
+- create load_texture subroutine
 */
-
-
 
 #include "SDL.h"
 
@@ -128,6 +126,16 @@ static void send_audio_to_device_queue_from_stream() {
     }
     SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
 }
+
+static SDL_Texture* load_texture(const char* fname) {
+    SDL_Surface* surface = SDL_LoadBMP(fname);
+    if (!surface) {
+        return NULL;
+    }
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+    return texture;  // may be NULL
+}
 int main() {
     SDL_bool paused = SDL_TRUE;
 
@@ -140,7 +148,7 @@ int main() {
     // we're done with it
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
-    window = SDL_CreateWindow("Hello SDL", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, 0);
+    window = SDL_CreateWindow("Hello SDL", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 275, 116, 0);
     if (!window) {
         panic_and_abort("SDL_CreateWindow failed", SDL_GetError());
     }
@@ -152,6 +160,14 @@ int main() {
         panic_and_abort("SDL_CreateRenderer failed", SDL_GetError());
     }
 
+    SDL_Texture* skin_main = load_texture("old_macos_skin/Main.bmp");
+    if (!skin_main) {
+        panic_and_abort("failed to load skin Main.bmp", SDL_GetError());
+    }
+    SDL_Texture* skin_cbuttons = load_texture("old_macos_skin/CButtons.bmp");
+    if (!skin_cbuttons) {
+        panic_and_abort("failed to load skin CButtons.bmp", SDL_GetError());
+    }
     SDL_zero(desired);
     desired.freq = 48000;
     desired.format = AUDIO_F32;
@@ -173,16 +189,18 @@ int main() {
     }
 
     const SDL_Rect rewind_rect = {110, 100, 100, 100};
-    const SDL_Rect pause_rect = {430, 100, 100, 100};
+    const SDL_Rect pause_rect = {62, 88, 23, 18};
     const SDL_Rect volume_rect = {70, 400, 500, 20};
-
+    const SDL_Rect cbuttons_pause_rect = {46, 0, 23, 18};
+    const SDL_Rect cbuttons_pause_pressed_rect = {46, 18, 23, 18};
     // no copy constructor?
     SDL_Rect volume_knob;
     SDL_memcpy(&volume_knob, &volume_rect, sizeof(SDL_Rect));
     volume_knob.w = 10;
     volume_knob.x = volume_rect.x + volume_level * volume_rect.w - (volume_knob.w / 2);
 
-    int green = 0;
+    SDL_bool cbutton_pause_pressed = SDL_FALSE;
+
     SDL_bool keep_going = SDL_TRUE;
     while (keep_going) {
         int queued_bytes = SDL_GetQueuedAudioSize(audio_device);
@@ -196,8 +214,9 @@ int main() {
                     keep_going = SDL_FALSE;
                     break;
                 }
-
+                case SDL_MOUSEBUTTONUP:
                 case SDL_MOUSEBUTTONDOWN: {
+                    const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
                     const SDL_Point pt = {e.button.x, e.button.y};
                     if (SDL_PointInRect(&pt, &rewind_rect)) {
                         // !!! FIXME: if you spam restart button takes a while after the most recent press to
@@ -206,9 +225,12 @@ int main() {
                         put_wavbuf_in_stream();
 
                     } else if (SDL_PointInRect(&pt, &pause_rect)) {
-                        paused = paused ? SDL_FALSE : SDL_TRUE;
-                        if (audio_device) {
-                            SDL_PauseAudioDevice(audio_device, paused);
+                        cbutton_pause_pressed = pressed;
+                        if (cbutton_pause_pressed) {
+                            paused = paused ? SDL_FALSE : SDL_TRUE;
+                            if (audio_device) {
+                                SDL_PauseAudioDevice(audio_device, paused);
+                            }
                         }
                     }
                     break;
@@ -233,21 +255,27 @@ int main() {
             }
         }
 
-        SDL_SetRenderDrawColor(renderer, 0, green, 0, 255);
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
         SDL_RenderClear(renderer);
 
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-
+        SDL_RenderCopy(renderer, skin_main, NULL, NULL);
+        SDL_RenderCopy(
+                renderer,
+                skin_cbuttons,
+                (cbutton_pause_pressed ? &cbuttons_pause_pressed_rect : &cbuttons_pause_rect),
+                &pause_rect);
+#if 0
         SDL_RenderFillRect(renderer, &rewind_rect);
         SDL_RenderFillRect(renderer, &pause_rect);
         SDL_RenderFillRect(renderer, &volume_rect);
         
         SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
         SDL_RenderFillRect(renderer, &volume_knob);
+#endif
 
         SDL_RenderPresent(renderer);
 
-        green = (green + 1) % 256;
+        // green = (green + 1) % 256;
     }
 
     SDL_FreeWAV(wavbuf);
