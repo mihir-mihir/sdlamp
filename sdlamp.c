@@ -28,10 +28,19 @@ NOTES FOR BALANCE CONTROL VIDEO (5)
 - goto failed (gotos in c vs c++)
 - stop audio instead of exiting in some cases?
 
-NOTES  FOR WINAMP INTRO VIDEO
+NOTES FOR WINAMP INTRO VIDEO
+-----------------------------
 - surfaces cpu, textures gpu, utility for creating texture from surface (then free the surface)
 - SDL_RenderCopy
 - create load_texture subroutine
+
+NOTES FOR REFACTOR VIDEO
+-------------------------
+- using pointer to winampskin in load_skin method bc you can't use references (&) in C, 
+    only way to "pass by reference" is with pointers
+- SDL_arraysize macro
+- draw_frame(), draw_button()
+- converted_buffer array is static bc in old times was poor practice to put 2kB on the stack
 */
 
 #include "SDL.h"
