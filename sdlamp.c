@@ -36,7 +36,7 @@ NOTES FOR WINAMP INTRO VIDEO
 
 NOTES FOR REFACTOR VIDEO
 -------------------------
-- using pointer to winampskin in load_skin method bc you can't use references (&) in C, 
+- using pointer to winampskin in load_skin method bc you can't use references (&) in C,
     only way to "pass by reference" is with pointers
 - SDL_arraysize macro
 - draw_frame(), draw_button()
@@ -45,10 +45,42 @@ NOTES FOR REFACTOR VIDEO
 
 #include "SDL.h"
 
+typedef struct {
+    SDL_Texture* tex;
+    SDL_Rect src_unpressed;
+    SDL_Rect src_pressed;
+    SDL_Rect dest;
+    SDL_bool pressed;
+} WinampSkinBtn;
+
+typedef enum { BTN_PREV, BTN_PLAY, BTN_PAUSE, BTN_STOP, BTN_NEXT, BTN_EJECT, BTN_TOTAL } WinampSkinBtnID;
+
+typedef struct {
+    SDL_Texture* tex_main;
+    SDL_Texture* tex_cbuttons;
+    WinampSkinBtn buttons[BTN_TOTAL];
+} WinampSkin;
+
 static SDL_AudioDeviceID audio_device = 0;
 SDL_AudioSpec wavspec;
 static SDL_Window* window = NULL;  // any time you need to draw to screen in sdl, you need a window
 static SDL_Renderer* renderer = NULL;
+
+// THIS GLOBAL STATE IS NOT PERMANAENT
+// static variables in C are initialized to zero when declared
+// eventually might want to put these in a struct so one "thing" is getting passed around, not a lot of individual
+// globals
+
+static SDL_AudioStream* stream = NULL;  // don't have to initialize stack variable to null?
+static SDL_AudioSpec desired;
+static Uint8* wavbuf = NULL;
+static Uint32 wavlen = 0;
+
+static float volume_level = 1.0f;
+
+static WinampSkin skin;
+
+static SDL_bool paused = SDL_TRUE;
 
 #if defined(__GNUC__) || defined(__clang__)
 static void panic_and_abort(const char* title, const char* text) __attribute__((noreturn));  // c/c++ attributes
@@ -61,79 +93,18 @@ static void panic_and_abort(const char* title, const char* text) {
     exit(1);
 }
 
-// THIS GLOBAL STATE IS NOT PERMANAENT
-// static variables in C are initialized to zero when declared
-// eventually might want to put these in a struct so one "thing" is getting passed around, not a lot of individual
-// globals
-
-static SDL_AudioStream* stream = NULL;  // don't have to initialize stack variable to null?
-static SDL_AudioSpec desired;
-static Uint8* wavbuf = NULL;
-static Uint32 wavlen = 0;
-
-// !!! FIXME: you don't need a global for this, can use static Uint8 cb* inside of event loop - using "static"
-// ensures that memory is only allocated for it once, so you're not reallocating every time the loop runs
-// one instance of the variable is shared across all calls to the function that the static variable is declared in
-static Uint8* converted_buf[32 * 1024];  // 32 kB
-
-float volume_level = 1.0f;
-
-// FIXME!!! can have this function return an audio stream and get rid of the stream global?
-static SDL_bool init_audio_stream(char* fname) {
-
-    // free the stream pointer first in case it already exists so you don't leak memory
-    SDL_FreeAudioStream(stream);
-    stream = NULL;
-    SDL_AudioSpec wavspec;
-    SDL_FreeWAV(wavbuf);  // if you pass SDL_free a null it's a noop
-    wavbuf = NULL;
-    wavlen = 0;  // length in BYTES
-    if (SDL_LoadWAV(fname, &wavspec, &wavbuf, &wavlen) == NULL) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't load wav file", SDL_GetError(), window);
-        return SDL_FALSE;
-    }
-
-    stream = SDL_NewAudioStream(
-            wavspec.format, wavspec.channels, wavspec.freq, desired.format, desired.channels, desired.freq);
-
-    // FIXME!!! error checking (if !stream)
-    return SDL_TRUE;
-}
-
-static SDL_bool put_wavbuf_in_stream() {
-    SDL_AudioStreamClear(stream);
-
-    // error condition can happen if you run out of memory
-    if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
-        return SDL_FALSE;
-        // maybe panic and abort here? bc you want to exit if you run out of memory
-    }
-
-    // !!! FIXME: error handling
-    SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
-    return SDL_TRUE;
-}
-
-static void send_audio_to_device_queue_from_stream() {
-    // in the video there's a var new_bytes = SDL_min(SDL_AudioStreamAvailable(stream), sizeof(converted_buf))
-    // might not need this var though bc len parameter in SDL_AudioStreamGet is specified as "max bytes to fill",
-    // not exact bytes to fill, so if there are fewer bytes remaining in the stream than the number of bytes in the
-    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of
-    // SDL_AudioStreamGet (good to know about SDL_min function though)
-
-    // it looks like we do need to use "gotten_bytes" to pass into SDL_QueueAudio function
-    int gotten_bytes = SDL_AudioStreamGet(stream, converted_buf, sizeof(converted_buf));
-    if (gotten_bytes == -1) {
-        panic_and_abort("failed to get converted data", SDL_GetError());
-    }
-    float* converted_samples = (float*)converted_buf;
-    int nsamples = gotten_bytes / sizeof(float);
-    // changing volume based on volume_level here:
-    for (int i = 0; i < nsamples; i++) {
-        converted_samples[i] *= volume_level;
-    }
-    SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
+// inlined funtion?
+static SDL_INLINE void init_skin_btn(
+        WinampSkinBtn* btn,
+        SDL_Texture* tex,
+        const SDL_Rect src_unpressed,
+        const SDL_Rect src_pressed,
+        const SDL_Rect dest) {
+    btn->tex = tex;
+    btn->src_unpressed = src_unpressed;
+    btn->src_pressed = src_pressed;
+    btn->dest = dest;
+    btn->pressed = SDL_FALSE;
 }
 
 static SDL_Texture* load_texture(const char* fname) {
@@ -145,9 +116,71 @@ static SDL_Texture* load_texture(const char* fname) {
     SDL_FreeSurface(surface);
     return texture;  // may be NULL
 }
-int main() {
-    SDL_bool paused = SDL_TRUE;
 
+static SDL_bool load_skin(WinampSkin* skin) {  // FIXME: use fname var
+    SDL_zerop(skin);  // zerop lets you pass in pointer instead of dereferenced ptr
+
+    skin->tex_main = load_texture("old_macos_skin/Main.bmp");
+    skin->tex_cbuttons = load_texture("old_macos_skin/CButtons.bmp");
+
+    const SDL_Rect prev = {16, 88, 23, 18};
+    const SDL_Rect play = {39, 88, 23, 18};
+    const SDL_Rect pause = {62, 88, 23, 18};
+    const SDL_Rect stop = {85, 88, 23, 18};
+    const SDL_Rect next = {108, 88, 22, 18};
+    const SDL_Rect eject = {136, 89, 22, 16};
+
+    const SDL_Rect cbtns_prev_unpressed = {0, 0, 23, 18};
+    const SDL_Rect cbtns_play_unpressed = {23, 0, 23, 18};
+    const SDL_Rect cbtns_pause_unpressed = {46, 0, 23, 18};
+    const SDL_Rect cbtns_stop_unpressed = {69, 0, 23, 18};
+    const SDL_Rect cbtns_next_unpressed = {92, 0, 22, 18};
+    const SDL_Rect cbtns_eject_unpressed = {114, 0, 22, 16};
+
+    const SDL_Rect cbtns_prev_pressed = {0, 18, 23, 18};
+    const SDL_Rect cbtns_play_pressed = {23, 18, 23, 18};
+    const SDL_Rect cbtns_pause_pressed = {46, 18, 23, 18};
+    const SDL_Rect cbtns_stop_pressed = {69, 18, 23, 18};
+    const SDL_Rect cbtns_next_pressed = {92, 18, 22, 18};
+    const SDL_Rect cbtns_eject_pressed = {114, 16, 22, 16};
+
+    init_skin_btn(&(skin->buttons[BTN_PREV]), skin->tex_cbuttons, cbtns_prev_unpressed, cbtns_prev_pressed, prev);
+    init_skin_btn(&(skin->buttons[BTN_PLAY]), skin->tex_cbuttons, cbtns_play_unpressed, cbtns_play_pressed, play);
+    init_skin_btn(&(skin->buttons[BTN_PAUSE]), skin->tex_cbuttons, cbtns_pause_unpressed, cbtns_pause_pressed, pause);
+    init_skin_btn(&(skin->buttons[BTN_STOP]), skin->tex_cbuttons, cbtns_stop_unpressed, cbtns_stop_pressed, stop);
+    init_skin_btn(&(skin->buttons[BTN_NEXT]), skin->tex_cbuttons, cbtns_next_unpressed, cbtns_next_pressed, next);
+    init_skin_btn(&(skin->buttons[BTN_EJECT]), skin->tex_cbuttons, cbtns_eject_unpressed, cbtns_eject_pressed, eject);
+
+    return SDL_TRUE;
+}
+
+static void load_wav_to_stream(char* fname) {
+    SDL_AudioSpec wavspec;
+
+    SDL_FreeWAV(wavbuf);  // if you pass SDL_free a null it's a noop
+    wavbuf = NULL;
+    wavlen = 0;  // length in BYTES
+
+    if (SDL_LoadWAV(fname, &wavspec, &wavbuf, &wavlen) == NULL) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't load wav file", SDL_GetError(), window);
+    }
+
+    // free the stream pointer first in case it already exists so you don't leak memory
+    SDL_FreeAudioStream(stream);
+    stream = SDL_NewAudioStream(
+            wavspec.format, wavspec.channels, wavspec.freq, desired.format, desired.channels, desired.freq);
+    // error condition can happen if you run out of memory
+    if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
+        // return SDL_FALSE;
+        // maybe panic and abort here? bc you want to exit if you run out of memory
+    }
+    // !!! FIXME: error handling
+    SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
+}
+// FIXME!!! can have this function return an audio stream and get rid of the stream global?
+
+static void init_everything() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) == -1) {
         panic_and_abort("SDL_Init failed", SDL_GetError());
     }
@@ -168,14 +201,9 @@ int main() {
     if (!renderer) {
         panic_and_abort("SDL_CreateRenderer failed", SDL_GetError());
     }
-
-    SDL_Texture* skin_main = load_texture("old_macos_skin/Main.bmp");
-    if (!skin_main) {
-        panic_and_abort("failed to load skin Main.bmp", SDL_GetError());
-    }
-    SDL_Texture* skin_cbuttons = load_texture("old_macos_skin/CButtons.bmp");
-    if (!skin_cbuttons) {
-        panic_and_abort("failed to load skin CButtons.bmp", SDL_GetError());
+    // !!! FIXME: load real skin
+    if (!load_skin(&skin)) {
+        panic_and_abort("failed to load initial skin", SDL_GetError());
     }
     SDL_zero(desired);
     desired.freq = 48000;
@@ -184,109 +212,18 @@ int main() {
     desired.samples = 4096;
     desired.callback = NULL;
 
-    init_audio_stream("music.wav");
-    put_wavbuf_in_stream();
-
     // 2nd null arg is for obtained audiospec param, telling sdl that if hardware has issues with desired spec, make SDL
     // "fake" desired spec so that we can write code for desired spec (HAS to work with desired spec)
     audio_device = SDL_OpenAudioDevice(NULL, 0, &desired, NULL, 0);
-
     if (audio_device == 0) {
         panic_and_abort("Couldn't open audio device", SDL_GetError());
-    } else {
-        SDL_PauseAudioDevice(audio_device, paused);
     }
 
-    const SDL_Rect rewind_rect = {110, 100, 100, 100};
-    const SDL_Rect pause_rect = {62, 88, 23, 18};
-    const SDL_Rect volume_rect = {70, 400, 500, 20};
-    const SDL_Rect cbuttons_pause_rect = {46, 0, 23, 18};
-    const SDL_Rect cbuttons_pause_pressed_rect = {46, 18, 23, 18};
-    // no copy constructor?
-    SDL_Rect volume_knob;
-    SDL_memcpy(&volume_knob, &volume_rect, sizeof(SDL_Rect));
-    volume_knob.w = 10;
-    volume_knob.x = volume_rect.x + volume_level * volume_rect.w - (volume_knob.w / 2);
+    load_wav_to_stream("music.wav");
+}
 
-    SDL_bool cbutton_pause_pressed = SDL_FALSE;
-
-    SDL_bool keep_going = SDL_TRUE;
-    while (keep_going) {
-        int queued_bytes = SDL_GetQueuedAudioSize(audio_device);
-        if (queued_bytes < 8192) {
-            send_audio_to_device_queue_from_stream();
-        }
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            switch (e.type) {
-                case SDL_QUIT: {
-                    keep_going = SDL_FALSE;
-                    break;
-                }
-                case SDL_MOUSEBUTTONUP:
-                case SDL_MOUSEBUTTONDOWN: {
-                    const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
-                    const SDL_Point pt = {e.button.x, e.button.y};
-                    if (SDL_PointInRect(&pt, &rewind_rect)) {
-                        // !!! FIXME: if you spam restart button takes a while after the most recent press to
-                        // play the audio - think this is because of multiple calls to convert the entire wav file
-                        SDL_ClearQueuedAudio(audio_device);
-                        put_wavbuf_in_stream();
-
-                    } else if (SDL_PointInRect(&pt, &pause_rect)) {
-                        cbutton_pause_pressed = pressed;
-                        if (cbutton_pause_pressed) {
-                            paused = paused ? SDL_FALSE : SDL_TRUE;
-                            if (audio_device) {
-                                SDL_PauseAudioDevice(audio_device, paused);
-                            }
-                        }
-                    }
-                    break;
-                }
-
-                case SDL_MOUSEMOTION: {
-                    const SDL_Point pt = {e.motion.x, e.motion.y};
-                    if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &volume_rect)) {
-                        volume_level = (float)(e.motion.x - volume_rect.x) / volume_rect.w;
-                        volume_knob.x = pt.x - (volume_knob.w / 2);
-                        printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
-                    }
-                    break;  // without break here, i get bad access exception on loadwav above - running out of memory?
-                }
-
-                case SDL_DROPFILE: {
-                    init_audio_stream(e.drop.file);
-                    put_wavbuf_in_stream();
-                    SDL_free(e.drop.file);
-                    break;
-                }
-            }
-        }
-
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL_RenderClear(renderer);
-
-        SDL_RenderCopy(renderer, skin_main, NULL, NULL);
-        SDL_RenderCopy(
-                renderer,
-                skin_cbuttons,
-                (cbutton_pause_pressed ? &cbuttons_pause_pressed_rect : &cbuttons_pause_rect),
-                &pause_rect);
-#if 0
-        SDL_RenderFillRect(renderer, &rewind_rect);
-        SDL_RenderFillRect(renderer, &pause_rect);
-        SDL_RenderFillRect(renderer, &volume_rect);
-        
-        SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
-        SDL_RenderFillRect(renderer, &volume_knob);
-#endif
-
-        SDL_RenderPresent(renderer);
-
-        // green = (green + 1) % 256;
-    }
-
+static void deinit_everything() {
+    // !!! FIXME: free(skin)
     SDL_FreeWAV(wavbuf);
     SDL_CloseAudioDevice(audio_device);
 
@@ -294,6 +231,139 @@ int main() {
     SDL_DestroyWindow(window);
 
     SDL_Quit();
+}
 
+static void feed_audio_to_device() {
+    // in the video there's a var new_bytes = SDL_min(SDL_AudioStreamAvailable(stream), sizeof(converted_buf))
+    // might not need this var though bc len parameter in SDL_AudioStreamGet is specified as "max bytes to fill",
+    // not exact bytes to fill, so if there are fewer bytes remaining in the stream than the number of bytes in the
+    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of
+    // SDL_AudioStreamGet (good to know about SDL_min function though)
+
+    // it looks like we do need to use "gotten_bytes" to pass into SDL_QueueAudio function
+
+    // 8MB stack on linux?
+    static Uint8 converted_buf[32 * 1024];
+    if (SDL_AudioStreamAvailable(stream) == 0) {
+        return;
+    }
+    int gotten_bytes = SDL_AudioStreamGet(stream, converted_buf, sizeof(converted_buf));
+
+    if (gotten_bytes == -1) {
+        panic_and_abort("failed to get converted data", SDL_GetError());
+    }
+
+    float* converted_samples = (float*)converted_buf;
+    int nsamples = gotten_bytes / sizeof(float);
+    // changing volume based on volume_level here:
+    for (int i = 0; i < nsamples; i++) {
+        converted_samples[i] *= volume_level;
+    }
+    SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
+}
+
+static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
+    if (btn->tex == NULL) {
+        if (btn->pressed) {
+            SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+        }
+        SDL_RenderFillRect(renderer, &(btn->dest));
+    } else {
+        SDL_RenderCopy(renderer, btn->tex, btn->pressed ? &(btn->src_pressed) : &(btn->src_unpressed), &(btn->dest));
+    }
+}
+static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    SDL_RenderCopy(renderer, skin->tex_main, NULL, NULL);
+
+    for (unsigned long i = 0; i < SDL_arraysize(skin->buttons); i++) {
+        draw_button(renderer, &skin->buttons[i]);
+    }
+
+    SDL_RenderPresent(renderer);
+
+    // green = (green + 1) % 256;
+}
+
+static SDL_bool handle_events(WinampSkin* skin) {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        switch (e.type) {
+            case SDL_QUIT: {
+                return SDL_FALSE;
+                break;
+            }
+            case SDL_MOUSEBUTTONUP:
+            case SDL_MOUSEBUTTONDOWN: {
+                const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
+                const SDL_Point pt = {e.button.x, e.button.y};
+
+                for (unsigned long i = 0; i < SDL_arraysize(skin->buttons); i++) {
+                    WinampSkinBtn* btn = &skin->buttons[i];
+                    btn->pressed = pressed && SDL_PointInRect(&pt, &btn->dest);
+                    if (btn->pressed) {
+                        switch ((WinampSkinBtnID)i) {
+                            case BTN_PREV:
+                                // !!! FIXME: if you spam restart button takes a while after the most recent press
+                                // to
+                                // play the audio - think this is because of multiple calls to convert the entire
+                                // wav file
+                                SDL_ClearQueuedAudio(audio_device);
+                                SDL_AudioStreamClear(stream);
+                                SDL_AudioStreamPut(stream, wavbuf, wavlen);
+
+                                break;
+                            case BTN_PAUSE:
+                                paused = paused ? SDL_FALSE : SDL_TRUE;
+                                SDL_PauseAudioDevice(audio_device, paused);
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                }
+                break;
+            }
+                // case SDL_MOUSEMOTION: {
+                //     const SDL_Point pt = {e.motion.x, e.motion.y};
+                //     if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &volume_rect)) {
+                //         volume_level = (float)(e.motion.x - volume_rect.x) / volume_rect.w;
+                //         volume_knob.x = pt.x - (volume_knob.w / 2);
+                //         printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
+                //     }
+                //     break;  // without break here, i get bad access exception on loadwav above - running out of
+                //     memory?
+                // }
+
+            case SDL_DROPFILE: {
+                load_wav_to_stream(e.drop.file);
+                SDL_free(e.drop.file);
+                break;
+            }
+        }
+    }
+    return SDL_TRUE;
+}
+
+int main() {
+    init_everything();  // will panic and abort on fail
+    while(handle_events(&skin)) {
+        draw_frame(renderer, &skin);
+        int queued_bytes = SDL_GetQueuedAudioSize(audio_device);
+        if (queued_bytes < 8192) {
+            feed_audio_to_device();
+        }
+    }
+
+    deinit_everything();
     return 0;
 }
+
+// feed audio samples/data to the audio device
+// load in wav at startup and when new file is selected (drag n drop for now)
+// have audio play from device based on state of pause button
+// restart current file when restart button pressed (will play or be paused based on pause button state
