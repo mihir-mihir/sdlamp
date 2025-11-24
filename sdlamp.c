@@ -77,6 +77,7 @@ static Uint8* wavbuf = NULL;
 static Uint32 wavlen = 0;
 
 static float volume_level = 1.0f;
+static float balance_slider_val = 0.5f;
 
 static WinampSkin skin;
 
@@ -91,6 +92,49 @@ static void panic_and_abort(const char* title, const char* text) {
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, text, window);
     SDL_Quit();
     exit(1);
+}
+
+static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) userdata, Uint8* output_stream, int len) {
+    // need to write data to "stream"
+    // desired.samples: bigger numbers mean fewer calls, smaller numbers mean less latency - how much audio gets
+    // buffered in a calls?
+    int gotten_bytes = 0;
+    if (stream == NULL) {
+        goto fill_silence;
+    }
+    gotten_bytes = SDL_AudioStreamGet(stream, output_stream, len);
+    if (gotten_bytes == 0) {
+        goto fill_silence;
+    }
+    float* samples = (float*)output_stream;
+    if (gotten_bytes == -1) {
+        panic_and_abort("failed to get converted data", SDL_GetError());
+    }
+
+    const int n_samples = gotten_bytes / sizeof(float);  // we are using F32 samples as specified in desired.format
+    SDL_assert((n_samples % 2) == 0);
+
+    // changing volume based on volume_level here:
+    for (int i = 0; i < n_samples; i++) {
+        samples[i] *= volume_level;
+    }
+
+    if (balance_slider_val > 0.5f) {
+        for (int i = 0; i < n_samples; i += 2) {
+            samples[i] *= 1.0f - balance_slider_val;  // should this be 0.5f - ...?
+        }
+    } else if (balance_slider_val < 0.5f) {
+        for (int i = 0; i < n_samples; i += 2) {
+            samples[i + 1] *= 1.0f - balance_slider_val;
+        }
+    }
+
+fill_silence:
+    len -= gotten_bytes;  // how many bytes under len are we after feeding device
+    output_stream += gotten_bytes;
+    SDL_memset(
+            output_stream, '\0', len);  // this will return immediately if len=0 so don't need to check that condition
+    return;
 }
 
 // inlined funtion?
@@ -118,7 +162,7 @@ static SDL_Texture* load_texture(const char* fname) {
 }
 
 static SDL_bool load_skin(WinampSkin* skin) {  // FIXME: use fname var
-    SDL_zerop(skin);  // zerop lets you pass in pointer instead of dereferenced ptr
+    SDL_zerop(skin);                           // zerop lets you pass in pointer instead of dereferenced ptr
 
     skin->tex_main = load_texture("old_macos_skin/Main.bmp");
     skin->tex_cbuttons = load_texture("old_macos_skin/CButtons.bmp");
@@ -154,29 +198,69 @@ static SDL_bool load_skin(WinampSkin* skin) {  // FIXME: use fname var
     return SDL_TRUE;
 }
 
-static void load_wav_to_stream(char* fname) {
-    SDL_AudioSpec wavspec;
+static void stop_audio(void) {
+    SDL_LockAudioDevice(audio_device);
+    if (stream) {
+        SDL_FreeAudioStream(stream);
+    }
+    stream = NULL;
+    SDL_UnlockAudioDevice(audio_device);
 
+    if (wavbuf) {
+        SDL_FreeWAV(wavbuf);
+    }
+    wavbuf = NULL;
+    wavlen = 0;
+}
+
+static SDL_bool load_wav_to_stream(char* fname) {
+
+    /* deal with wav data */
     SDL_FreeWAV(wavbuf);  // if you pass SDL_free a null it's a noop
     wavbuf = NULL;
     wavlen = 0;  // length in BYTES
-
+    SDL_AudioSpec wavspec;
     if (SDL_LoadWAV(fname, &wavspec, &wavbuf, &wavlen) == NULL) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't load wav file", SDL_GetError(), window);
+        goto failed;
     }
 
+    /* deal with stream */
+    SDL_AudioStream* tmpstream = stream;  // set tmp var so we can free stream outside of locked code
+    // lock the audio device here so the callback can't touch "stream" global between lock/unlock
+    SDL_LockAudioDevice(audio_device);
+    stream = NULL;
+    SDL_UnlockAudioDevice(audio_device);
+
     // free the stream pointer first in case it already exists so you don't leak memory
-    SDL_FreeAudioStream(stream);
-    stream = SDL_NewAudioStream(
+    // also using tmpstream temp var until the stream is setup before re-setting global "stream" ptr val
+    // (don't want to be working with stream global when callback isn't locked)
+    SDL_FreeAudioStream(tmpstream);
+    tmpstream = SDL_NewAudioStream(
             wavspec.format, wavspec.channels, wavspec.freq, desired.format, desired.channels, desired.freq);
-    // error condition can happen if you run out of memory
-    if (SDL_AudioStreamPut(stream, wavbuf, wavlen) == -1) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Couldn't put data in audio stream", SDL_GetError(), window);
-        // return SDL_FALSE;
-        // maybe panic and abort here? bc you want to exit if you run out of memory
+    if (!tmpstream) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "couldn't create audio stream", SDL_GetError(), window);
+        goto failed;
     }
-    // !!! FIXME: error handling
-    SDL_AudioStreamFlush(stream);  // convert all of the  data so it's available with SDL_AudioStreamGet
+
+    // error condition can happen if you run out of memory
+    if (SDL_AudioStreamPut(tmpstream, wavbuf, wavlen) == -1) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "couldn't put data in audio stream", SDL_GetError(), window);
+        goto failed;
+    }
+
+    if (SDL_AudioStreamFlush(tmpstream) == -1) {  // convert all of the  data so it's available with SDL_AudioStreamGet
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "couldn't flush audio stream", SDL_GetError(), window);
+        goto failed;
+    }
+
+    SDL_LockAudioDevice(audio_device);
+    stream = tmpstream;
+    SDL_UnlockAudioDevice(audio_device);
+
+failed:
+    stop_audio();
+    return SDL_FALSE;
 }
 // FIXME!!! can have this function return an audio stream and get rid of the stream global?
 
@@ -210,7 +294,7 @@ static void init_everything() {
     desired.format = AUDIO_F32;
     desired.channels = 2;
     desired.samples = 4096;
-    desired.callback = NULL;
+    desired.callback = feed_audio_device_callback;
 
     // 2nd null arg is for obtained audiospec param, telling sdl that if hardware has issues with desired spec, make SDL
     // "fake" desired spec so that we can write code for desired spec (HAS to work with desired spec)
@@ -231,35 +315,6 @@ static void deinit_everything() {
     SDL_DestroyWindow(window);
 
     SDL_Quit();
-}
-
-static void feed_audio_to_device() {
-    // in the video there's a var new_bytes = SDL_min(SDL_AudioStreamAvailable(stream), sizeof(converted_buf))
-    // might not need this var though bc len parameter in SDL_AudioStreamGet is specified as "max bytes to fill",
-    // not exact bytes to fill, so if there are fewer bytes remaining in the stream than the number of bytes in the
-    // converted buffer, it should still be ok to give sizeof(converted_buf) as the arg for the len param of
-    // SDL_AudioStreamGet (good to know about SDL_min function though)
-
-    // it looks like we do need to use "gotten_bytes" to pass into SDL_QueueAudio function
-
-    // 8MB stack on linux?
-    static Uint8 converted_buf[32 * 1024];
-    if (SDL_AudioStreamAvailable(stream) == 0) {
-        return;
-    }
-    int gotten_bytes = SDL_AudioStreamGet(stream, converted_buf, sizeof(converted_buf));
-
-    if (gotten_bytes == -1) {
-        panic_and_abort("failed to get converted data", SDL_GetError());
-    }
-
-    float* converted_samples = (float*)converted_buf;
-    int nsamples = gotten_bytes / sizeof(float);
-    // changing volume based on volume_level here:
-    for (int i = 0; i < nsamples; i++) {
-        converted_samples[i] *= volume_level;
-    }
-    SDL_QueueAudio(audio_device, converted_buf, gotten_bytes);
 }
 
 static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
@@ -302,17 +357,18 @@ static SDL_bool handle_events(WinampSkin* skin) {
                 const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
                 const SDL_Point pt = {e.button.x, e.button.y};
 
-                for (unsigned long i = 0; i < SDL_arraysize(skin->buttons); i++) {
+                for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
                     WinampSkinBtn* btn = &skin->buttons[i];
                     btn->pressed = pressed && SDL_PointInRect(&pt, &btn->dest);
                     if (btn->pressed) {
                         switch ((WinampSkinBtnID)i) {
                             case BTN_PREV:
-                                // !!! FIXME: if you spam restart button takes a while after the most recent press
-                                // to
-                                // play the audio - think this is because of multiple calls to convert the entire
-                                // wav file
-                                SDL_ClearQueuedAudio(audio_device);
+                                // !!! FIXME: if you spam restart button takes a while after the most recent press to
+                                // play the audio - think this is because of multiple calls to convert the entire wav
+                                // file
+
+                                // both stream clear and put functions are thread-safe - don't need to lock audio device
+                                // when passing stream global to them
                                 SDL_AudioStreamClear(stream);
                                 SDL_AudioStreamPut(stream, wavbuf, wavlen);
 
@@ -351,12 +407,8 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
 int main() {
     init_everything();  // will panic and abort on fail
-    while(handle_events(&skin)) {
+    while (handle_events(&skin)) {
         draw_frame(renderer, &skin);
-        int queued_bytes = SDL_GetQueuedAudioSize(audio_device);
-        if (queued_bytes < 8192) {
-            feed_audio_to_device();
-        }
     }
 
     deinit_everything();
