@@ -100,6 +100,7 @@ static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) use
     // buffered in a calls?
     int gotten_bytes = 0;
     if (stream == NULL) {
+        printf("stream is NULL\n");
         goto fill_silence;
     }
     gotten_bytes = SDL_AudioStreamGet(stream, output_stream, len);
@@ -258,7 +259,10 @@ static SDL_bool load_wav_to_stream(char* fname) {
     stream = tmpstream;
     SDL_UnlockAudioDevice(audio_device);
 
+    return SDL_TRUE;
+
 failed:
+    printf("in faliled section\n");
     stop_audio();
     return SDL_FALSE;
 }
@@ -371,7 +375,7 @@ static SDL_bool handle_events(WinampSkin* skin) {
                                 // when passing stream global to them
                                 SDL_AudioStreamClear(stream);
                                 SDL_AudioStreamPut(stream, wavbuf, wavlen);
-
+                                SDL_AudioStreamFlush(stream);
                                 break;
                             case BTN_PAUSE:
                                 paused = paused ? SDL_FALSE : SDL_TRUE;
