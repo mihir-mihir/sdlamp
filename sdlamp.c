@@ -47,18 +47,34 @@ NOTES FOR REFACTOR VIDEO
 
 typedef struct {
     SDL_Texture* tex;
-    SDL_Rect src_unpressed;
-    SDL_Rect src_pressed;
-    SDL_Rect dest;
+    SDL_Rect src_unpressed_rect;
+    SDL_Rect src_pressed_rect;
+    SDL_Rect dest_rect;
     SDL_bool pressed;
 } WinampSkinBtn;
 
 typedef enum { BTN_PREV, BTN_PLAY, BTN_PAUSE, BTN_STOP, BTN_NEXT, BTN_EJECT, BTN_TOTAL } WinampSkinBtnID;
 
+// sliders have a separate bitmap for each state
+typedef struct {
+    SDL_Texture* tex;
+    WinampSkinBtn knob;
+    int n_frames;
+    int frame_width;
+    int frame_height;
+    SDL_Rect src_rect;  // might need to make this an array
+    SDL_Rect dest_rect;
+    float val;
+} WinampSkinSlider;
+
+typedef enum { SLD_VOLUME, SLD_BALANCE, SLD_TOTAL } WinampSkinSliderID;
+
 typedef struct {
     SDL_Texture* tex_main;
     SDL_Texture* tex_cbuttons;
+    SDL_Texture* tex_volume;
     WinampSkinBtn buttons[BTN_TOTAL];
+    WinampSkinSlider sliders[SLD_TOTAL];
 } WinampSkin;
 
 static SDL_AudioDeviceID audio_device = 0;
@@ -142,14 +158,30 @@ fill_silence:
 static SDL_INLINE void init_skin_btn(
         WinampSkinBtn* btn,
         SDL_Texture* tex,
-        const SDL_Rect src_unpressed,
-        const SDL_Rect src_pressed,
-        const SDL_Rect dest) {
+        const SDL_Rect src_unpressed_rect,
+        const SDL_Rect src_pressed_rect,
+        const SDL_Rect dest_rect) {
     btn->tex = tex;
-    btn->src_unpressed = src_unpressed;
-    btn->src_pressed = src_pressed;
-    btn->dest = dest;
+    btn->src_unpressed_rect = src_unpressed_rect;
+    btn->src_pressed_rect = src_pressed_rect;
+    btn->dest_rect = dest_rect;
     btn->pressed = SDL_FALSE;
+}
+
+static SDL_INLINE void init_skin_slider(
+        WinampSkinSlider* slider,
+        SDL_Texture* tex,
+        // const SDL_Rect knob_unpressed_rect,
+        // const SDL_Rect knob_pressed_rect,
+        // const SDL_Rect knob_dest_rect,
+        const int n_frames,
+        const SDL_Rect dest_rect,
+        const float val) {
+    slider->tex = tex;
+    slider->n_frames = n_frames;
+    slider->val = val;
+    slider->dest_rect = dest_rect;
+    // init_skin_btn(&slider->knob, tex, knob_unpressed_rect, knob_pressed_rect, knob_dest_rect);
 }
 
 static SDL_Texture* load_texture(const char* fname) {
@@ -162,39 +194,51 @@ static SDL_Texture* load_texture(const char* fname) {
     return texture;  // may be NULL
 }
 
-static SDL_bool load_skin(WinampSkin* skin) {  // FIXME: use fname var
-    SDL_zerop(skin);                           // zerop lets you pass in pointer instead of dereferenced ptr
+static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) fname) {  // FIXME: use fname var
+    SDL_zerop(skin);  // zerop lets you pass in pointer instead of dereferenced ptr
 
-    skin->tex_main = load_texture("old_macos_skin/Main.bmp");
-    skin->tex_cbuttons = load_texture("old_macos_skin/CButtons.bmp");
+    skin->tex_main = load_texture("hifi/Main.bmp");  // !!! FIXME: hardcoded
+    skin->tex_cbuttons = load_texture("hifi/CButtons.bmp");
+    skin->tex_volume = load_texture("hifi/Volume.bmp");
 
-    const SDL_Rect prev = {16, 88, 23, 18};
-    const SDL_Rect play = {39, 88, 23, 18};
-    const SDL_Rect pause = {62, 88, 23, 18};
-    const SDL_Rect stop = {85, 88, 23, 18};
-    const SDL_Rect next = {108, 88, 22, 18};
-    const SDL_Rect eject = {136, 89, 22, 16};
+    init_skin_btn(
+            &(skin->buttons[BTN_PREV]),
+            skin->tex_cbuttons,
+            (SDL_Rect){0, 0, 23, 18},
+            (SDL_Rect){0, 18, 23, 18},
+            (SDL_Rect){16, 88, 23, 18});
+    init_skin_btn(
+            &(skin->buttons[BTN_PLAY]),
+            skin->tex_cbuttons,
+            (SDL_Rect){23, 0, 23, 18},
+            (SDL_Rect){23, 18, 23, 18},
+            (SDL_Rect){39, 88, 23, 18});
+    init_skin_btn(
+            &(skin->buttons[BTN_PAUSE]),
+            skin->tex_cbuttons,
+            (SDL_Rect){46, 0, 23, 18},
+            (SDL_Rect){46, 18, 23, 18},
+            (SDL_Rect){62, 88, 23, 18});
+    init_skin_btn(
+            &(skin->buttons[BTN_STOP]),
+            skin->tex_cbuttons,
+            (SDL_Rect){69, 0, 23, 18},
+            (SDL_Rect){69, 18, 23, 18},
+            (SDL_Rect){85, 88, 23, 18});
+    init_skin_btn(
+            &(skin->buttons[BTN_NEXT]),
+            skin->tex_cbuttons,
+            (SDL_Rect){92, 0, 22, 18},
+            (SDL_Rect){92, 18, 22, 18},
+            (SDL_Rect){108, 88, 22, 18});
+    init_skin_btn(
+            &(skin->buttons[BTN_EJECT]),
+            skin->tex_cbuttons,
+            (SDL_Rect){114, 0, 22, 16},
+            (SDL_Rect){114, 16, 22, 16},
+            (SDL_Rect){136, 89, 22, 16});
 
-    const SDL_Rect cbtns_prev_unpressed = {0, 0, 23, 18};
-    const SDL_Rect cbtns_play_unpressed = {23, 0, 23, 18};
-    const SDL_Rect cbtns_pause_unpressed = {46, 0, 23, 18};
-    const SDL_Rect cbtns_stop_unpressed = {69, 0, 23, 18};
-    const SDL_Rect cbtns_next_unpressed = {92, 0, 22, 18};
-    const SDL_Rect cbtns_eject_unpressed = {114, 0, 22, 16};
-
-    const SDL_Rect cbtns_prev_pressed = {0, 18, 23, 18};
-    const SDL_Rect cbtns_play_pressed = {23, 18, 23, 18};
-    const SDL_Rect cbtns_pause_pressed = {46, 18, 23, 18};
-    const SDL_Rect cbtns_stop_pressed = {69, 18, 23, 18};
-    const SDL_Rect cbtns_next_pressed = {92, 18, 22, 18};
-    const SDL_Rect cbtns_eject_pressed = {114, 16, 22, 16};
-
-    init_skin_btn(&(skin->buttons[BTN_PREV]), skin->tex_cbuttons, cbtns_prev_unpressed, cbtns_prev_pressed, prev);
-    init_skin_btn(&(skin->buttons[BTN_PLAY]), skin->tex_cbuttons, cbtns_play_unpressed, cbtns_play_pressed, play);
-    init_skin_btn(&(skin->buttons[BTN_PAUSE]), skin->tex_cbuttons, cbtns_pause_unpressed, cbtns_pause_pressed, pause);
-    init_skin_btn(&(skin->buttons[BTN_STOP]), skin->tex_cbuttons, cbtns_stop_unpressed, cbtns_stop_pressed, stop);
-    init_skin_btn(&(skin->buttons[BTN_NEXT]), skin->tex_cbuttons, cbtns_next_unpressed, cbtns_next_pressed, next);
-    init_skin_btn(&(skin->buttons[BTN_EJECT]), skin->tex_cbuttons, cbtns_eject_unpressed, cbtns_eject_pressed, eject);
+    init_skin_slider(&skin->sliders[SLD_VOLUME], skin->tex_volume, 28, (SDL_Rect){109, 62, 68, 13}, volume_level);
 
     return SDL_TRUE;
 }
@@ -290,7 +334,7 @@ static void init_everything() {
         panic_and_abort("SDL_CreateRenderer failed", SDL_GetError());
     }
     // !!! FIXME: load real skin
-    if (!load_skin(&skin)) {
+    if (!load_skin(&skin, "")) {
         panic_and_abort("failed to load initial skin", SDL_GetError());
     }
     SDL_zero(desired);
@@ -324,14 +368,42 @@ static void deinit_everything() {
 static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
     if (btn->tex == NULL) {
         if (btn->pressed) {
-            SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
+            SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
         } else {
             SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
         }
-        SDL_RenderFillRect(renderer, &(btn->dest));
-    } else {
-        SDL_RenderCopy(renderer, btn->tex, btn->pressed ? &(btn->src_pressed) : &(btn->src_unpressed), &(btn->dest));
+        SDL_RenderFillRect(renderer, &(btn->dest_rect));
+        return;
     }
+    SDL_RenderCopy(
+            renderer, btn->tex, btn->pressed ? &btn->src_pressed_rect : &btn->src_unpressed_rect, &btn->dest_rect);
+}
+
+static void draw_slider(SDL_Renderer* renderer, WinampSkinSlider* slider) {
+    // draw rects if no texture available
+    if (slider->tex == NULL) {
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderFillRect(renderer, &slider->dest_rect);
+        if (slider->knob.pressed) {
+            SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+        }
+        SDL_RenderFillRect(renderer, &slider->knob.dest_rect);
+        return;
+    }
+    printf("vol slider y: %f\n", floorf(volume_level * slider->n_frames));
+    SDL_RenderCopy(
+            renderer,
+            slider->tex,
+            &(SDL_Rect){
+                    0, (SDL_max(floorf(volume_level * slider->n_frames) - 1, 0)) * 15, slider->dest_rect.w, slider->dest_rect.h},
+            // &(SDL_Rect){0, 0, slider->dest_rect.w, slider->dest_rect.h},
+
+            &slider->dest_rect);
+    // SDL_RenderCopy(renderer, slider->tex, )
+
+    // 68x418, 68x13, 68x15
 }
 static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -339,9 +411,10 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
 
     SDL_RenderCopy(renderer, skin->tex_main, NULL, NULL);
 
-    for (unsigned long i = 0; i < SDL_arraysize(skin->buttons); i++) {
+    for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
         draw_button(renderer, &skin->buttons[i]);
     }
+    draw_slider(renderer, &skin->sliders[SLD_VOLUME]);
 
     SDL_RenderPresent(renderer);
 
@@ -363,7 +436,7 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
                 for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
                     WinampSkinBtn* btn = &skin->buttons[i];
-                    btn->pressed = pressed && SDL_PointInRect(&pt, &btn->dest);
+                    btn->pressed = pressed && SDL_PointInRect(&pt, &btn->dest_rect);
                     if (btn->pressed) {
                         switch ((WinampSkinBtnID)i) {
                             case BTN_PREV:
@@ -388,16 +461,15 @@ static SDL_bool handle_events(WinampSkin* skin) {
                 }
                 break;
             }
-                // case SDL_MOUSEMOTION: {
-                //     const SDL_Point pt = {e.motion.x, e.motion.y};
-                //     if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &volume_rect)) {
-                //         volume_level = (float)(e.motion.x - volume_rect.x) / volume_rect.w;
-                //         volume_knob.x = pt.x - (volume_knob.w / 2);
-                //         printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
-                //     }
-                //     break;  // without break here, i get bad access exception on loadwav above - running out of
-                //     memory?
-                // }
+            case SDL_MOUSEMOTION: {
+                const SDL_Point pt = {e.motion.x, e.motion.y};
+                if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &skin->sliders[SLD_VOLUME].dest_rect)) {
+                    volume_level = (float)(e.motion.x - skin->sliders[SLD_VOLUME].dest_rect.x) / skin->sliders[SLD_VOLUME].dest_rect.w;
+                    // volume_knob.x = pt.x - (volume_knob.w / 2);
+                    printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
+                }
+                break;  // without break here, i get bad access exception on loadwav above - running out of
+            }
 
             case SDL_DROPFILE: {
                 load_wav_to_stream(e.drop.file);
