@@ -60,9 +60,10 @@ typedef struct {
     SDL_Texture* tex;
     WinampSkinBtn knob;
     int n_frames;
+    int x_offset;
+    int y_offset;
     int frame_width;
     int frame_height;
-    SDL_Rect src_rect;  // might need to make this an array
     SDL_Rect dest_rect;
     float val;
 } WinampSkinSlider;
@@ -73,6 +74,7 @@ typedef struct {
     SDL_Texture* tex_main;
     SDL_Texture* tex_cbuttons;
     SDL_Texture* tex_volume;
+    SDL_Texture* tex_balance;
     WinampSkinBtn buttons[BTN_TOTAL];
     WinampSkinSlider sliders[SLD_TOTAL];
 } WinampSkin;
@@ -91,9 +93,6 @@ static SDL_AudioStream* stream = NULL;  // don't have to initialize stack variab
 static SDL_AudioSpec desired;
 static Uint8* wavbuf = NULL;
 static Uint32 wavlen = 0;
-
-static float volume_level = 1.0f;
-static float balance_slider_val = 0.5f;
 
 static WinampSkin skin;
 
@@ -128,21 +127,23 @@ static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) use
         panic_and_abort("failed to get converted data", SDL_GetError());
     }
 
+    const float volume = skin.sliders[SLD_VOLUME].val;
+    const float balance = skin.sliders[SLD_BALANCE].val;
     const int n_samples = gotten_bytes / sizeof(float);  // we are using F32 samples as specified in desired.format
     SDL_assert((n_samples % 2) == 0);
 
     // changing volume based on volume_level here:
     for (int i = 0; i < n_samples; i++) {
-        samples[i] *= volume_level;
+        samples[i] *= volume;
     }
 
-    if (balance_slider_val > 0.5f) {
+    if (balance > 0.5f) { // left samples
         for (int i = 0; i < n_samples; i += 2) {
-            samples[i] *= 1.0f - balance_slider_val;  // should this be 0.5f - ...?
+            samples[i] *= 1.0f - balance; 
         }
-    } else if (balance_slider_val < 0.5f) {
+    } else if (balance < 0.5f) { // right samples
         for (int i = 0; i < n_samples; i += 2) {
-            samples[i + 1] *= 1.0f - balance_slider_val;
+            samples[i + 1] *= balance;
         }
     }
 
@@ -168,20 +169,35 @@ static SDL_INLINE void init_skin_btn(
     btn->pressed = SDL_FALSE;
 }
 
+// this and above button init method are kind of like constructors in C
 static SDL_INLINE void init_skin_slider(
         WinampSkinSlider* slider,
         SDL_Texture* tex,
-        // const SDL_Rect knob_unpressed_rect,
-        // const SDL_Rect knob_pressed_rect,
-        // const SDL_Rect knob_dest_rect,
+        const SDL_Rect knob_src_unpressed_rect,
+        const SDL_Rect knob_src_pressed_rect,
+        const int x_offset,
+        const int y_offset,
         const int n_frames,
+        const int frame_width,
+        const int frame_height,
         const SDL_Rect dest_rect,
         const float val) {
     slider->tex = tex;
+    slider->x_offset = x_offset;
+    slider->y_offset = y_offset;
+    slider->frame_width = frame_width;
+    slider->frame_height = frame_height;
     slider->n_frames = n_frames;
     slider->val = val;
     slider->dest_rect = dest_rect;
-    // init_skin_btn(&slider->knob, tex, knob_unpressed_rect, knob_pressed_rect, knob_dest_rect);
+    
+    const int knob_dest_x = (int)dest_rect.x + (slider->val * dest_rect.w) - (knob_src_unpressed_rect.w / 2);
+    const int min_knob_dest_x = slider->dest_rect.x;
+    const int max_knob_dest_x = slider->dest_rect.x + slider->dest_rect.w - knob_src_unpressed_rect.w;
+    const int clamped_knob_dest_x = SDL_clamp(knob_dest_x, min_knob_dest_x, max_knob_dest_x);
+    const int knob_dest_y = dest_rect.y - (knob_src_pressed_rect.h - dest_rect.h) / 2;
+    const SDL_Rect knob_dest_rect = {clamped_knob_dest_x, knob_dest_y, knob_src_unpressed_rect.w, knob_src_unpressed_rect.h};
+    init_skin_btn(&slider->knob, tex, knob_src_unpressed_rect, knob_src_pressed_rect, knob_dest_rect);
 }
 
 static SDL_Texture* load_texture(const char* fname) {
@@ -197,9 +213,10 @@ static SDL_Texture* load_texture(const char* fname) {
 static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) fname) {  // FIXME: use fname var
     SDL_zerop(skin);  // zerop lets you pass in pointer instead of dereferenced ptr
 
-    skin->tex_main = load_texture("hifi/Main.bmp");  // !!! FIXME: hardcoded
-    skin->tex_cbuttons = load_texture("hifi/CButtons.bmp");
-    skin->tex_volume = load_texture("hifi/Volume.bmp");
+    skin->tex_main = load_texture("skinner_atlas/Main.bmp");  // !!! FIXME: hardcoded
+    skin->tex_cbuttons = load_texture("skinner_atlas/CButtons.bmp");
+    skin->tex_volume = load_texture("skinner_atlas/Volume.bmp");
+    skin->tex_balance = load_texture("skinner_atlas/Balance.bmp");
 
     init_skin_btn(
             &(skin->buttons[BTN_PREV]),
@@ -238,7 +255,31 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
             (SDL_Rect){114, 16, 22, 16},
             (SDL_Rect){136, 89, 22, 16});
 
-    init_skin_slider(&skin->sliders[SLD_VOLUME], skin->tex_volume, 28, (SDL_Rect){109, 62, 68, 13}, volume_level);
+    init_skin_slider(
+            &skin->sliders[SLD_VOLUME],
+            skin->tex_volume,
+            (SDL_Rect){0, 422, 14, 11},
+            (SDL_Rect){15, 422, 14, 11},
+            0,
+            0,
+            28,
+            68,
+            15,
+            (SDL_Rect){107, 57, 68, 13},
+            1.0f);  // volume level starts at 1.0
+
+    init_skin_slider(
+            &skin->sliders[SLD_BALANCE],
+            skin->tex_balance,
+            (SDL_Rect){0, 422, 14, 11},
+            (SDL_Rect){15, 422, 14, 11},
+            9,   // x offset
+            0,   // y offset
+            28,  // n frames
+            38,  // frame width
+            15,  // frame height
+            (SDL_Rect){177, 57, 38, 13},
+            0.5f);  // balance level starts at 0.5
 
     return SDL_TRUE;
 }
@@ -380,9 +421,12 @@ static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
 }
 
 static void draw_slider(SDL_Renderer* renderer, WinampSkinSlider* slider) {
+    SDL_assert(slider->val >= 0.0f);
+    SDL_assert(slider->val <= 1.0f);
     // draw rects if no texture available
     if (slider->tex == NULL) {
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        const int color = (int)(255.0f * slider->val);
+        SDL_SetRenderDrawColor(renderer, color, color, color, 255);
         SDL_RenderFillRect(renderer, &slider->dest_rect);
         if (slider->knob.pressed) {
             SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
@@ -392,18 +436,15 @@ static void draw_slider(SDL_Renderer* renderer, WinampSkinSlider* slider) {
         SDL_RenderFillRect(renderer, &slider->knob.dest_rect);
         return;
     }
-    printf("vol slider y: %f\n", floorf(volume_level * slider->n_frames));
-    SDL_RenderCopy(
-            renderer,
-            slider->tex,
-            &(SDL_Rect){
-                    0, (SDL_max(floorf(volume_level * slider->n_frames) - 1, 0)) * 15, slider->dest_rect.w, slider->dest_rect.h},
-            // &(SDL_Rect){0, 0, slider->dest_rect.w, slider->dest_rect.h},
-
-            &slider->dest_rect);
-    // SDL_RenderCopy(renderer, slider->tex, )
-
-    // 68x418, 68x13, 68x15
+    const int frame_idx = (int)(slider->val * (slider->n_frames - 1));
+    const int src_y = slider->y_offset + frame_idx * slider->frame_height;
+    const SDL_Rect src_rect = {slider->x_offset, src_y, slider->dest_rect.w, slider->dest_rect.h};
+    SDL_RenderCopy(renderer, slider->tex, &src_rect, &slider->dest_rect);
+    if (slider->knob.pressed) {
+        SDL_RenderCopy(renderer, slider->tex, &slider->knob.src_pressed_rect, &slider->knob.dest_rect);
+    } else {
+        SDL_RenderCopy(renderer, slider->tex, &slider->knob.src_unpressed_rect, &slider->knob.dest_rect);
+    }
 }
 static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -415,10 +456,25 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
         draw_button(renderer, &skin->buttons[i]);
     }
     draw_slider(renderer, &skin->sliders[SLD_VOLUME]);
+    draw_slider(renderer, &skin->sliders[SLD_BALANCE]);
 
     SDL_RenderPresent(renderer);
+}
 
-    // green = (green + 1) % 256;
+static void handle_slider_mouse(WinampSkinSlider* slider, const SDL_bool pressed, const SDL_Point* pt) {
+    // assert that slider ptr not null here?
+    slider->knob.pressed = (pressed && SDL_PointInRect(pt, &slider->dest_rect)) ? SDL_TRUE : SDL_FALSE;
+    if (slider->knob.pressed) {
+        const int new_knob_x = pt->x - (slider->knob.dest_rect.w / 2);
+        const int min_knob_x = slider->dest_rect.x;
+        const int max_knob_x = slider->dest_rect.x + slider->dest_rect.w
+                               - slider->knob.dest_rect.w;  // want to pre-calc this before feeding into macro
+        slider->knob.dest_rect.x = SDL_clamp(new_knob_x, min_knob_x, max_knob_x);
+        SDL_LockAudioDevice(audio_device);
+        slider->val = (float)(pt->x - slider->dest_rect.x) / slider->dest_rect.w;
+        SDL_UnlockAudioDevice(audio_device);
+        // printf("mouse motion at (%d, %d), percent: %f\n", pt->x, pt->y, slider->val);
+    }
 }
 
 static SDL_bool handle_events(WinampSkin* skin) {
@@ -463,12 +519,11 @@ static SDL_bool handle_events(WinampSkin* skin) {
             }
             case SDL_MOUSEMOTION: {
                 const SDL_Point pt = {e.motion.x, e.motion.y};
-                if (e.motion.state == SDL_PRESSED && SDL_PointInRect(&pt, &skin->sliders[SLD_VOLUME].dest_rect)) {
-                    volume_level = (float)(e.motion.x - skin->sliders[SLD_VOLUME].dest_rect.x) / skin->sliders[SLD_VOLUME].dest_rect.w;
-                    // volume_knob.x = pt.x - (volume_knob.w / 2);
-                    printf("mouse motion at (%d, %d), percent: %f\n", e.motion.x, e.motion.y, volume_level);
+                const SDL_bool pressed = (e.motion.state & SDL_BUTTON_LMASK) ? SDL_TRUE : SDL_FALSE;
+                for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+                    handle_slider_mouse(&skin->sliders[i], pressed, &pt);
                 }
-                break;  // without break here, i get bad access exception on loadwav above - running out of
+                break;  // without break here, i get bad access exception on loadwav above - running out of memory
             }
 
             case SDL_DROPFILE: {
