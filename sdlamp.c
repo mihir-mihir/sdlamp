@@ -500,7 +500,12 @@ static SDL_bool handle_events(WinampSkin* skin) {
             }
 
             case SDL_MOUSEBUTTONDOWN: {
-                const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
+                // we only care about left clicking
+                if (e.button.button != SDL_BUTTON_LEFT) {
+                    break;
+                }
+                // don't need to check for pressed state bc we're in mousebuttondown case
+                // const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
                 const SDL_Point pt = {e.button.x, e.button.y};
 
                 // !!! FIXME: find a way to deal with both knobs and buttons without repeating same code in both for loops
@@ -509,7 +514,7 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
                     // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
                     // find a way to avoid this repetition 
-                    if (pressed && SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
+                    if (SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
                         skin->pressed_btn = btn;
                     }
                 }
@@ -519,7 +524,7 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
                     // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
                     // find a way to avoid this repetition 
-                    if (pressed && SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
+                    if (SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
                         skin->pressed_btn = btn;
                     }
                     if (skin->pressed_btn == btn) {
