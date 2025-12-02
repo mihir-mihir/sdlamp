@@ -45,17 +45,31 @@ NOTES FOR REFACTOR VIDEO
 
 #include "SDL.h"
 
-typedef struct {
+typedef void (*ClickFn)(void);
+
+// tagging struct so that it doesn't show up as unnamed in VSCode
+typedef struct WinampSkinBtn {
     SDL_Texture* tex;
     SDL_Rect src_unpressed_rect;
     SDL_Rect src_pressed_rect;
     SDL_Rect dest_rect;
+    ClickFn clickfn;
 } WinampSkinBtn;
 
-typedef enum { BTN_PREV, BTN_PLAY, BTN_PAUSE, BTN_STOP, BTN_NEXT, BTN_EJECT, BTN_TOTAL } WinampSkinBtnID;
+// tagging enum so that it doesn't show up as unnamed in VSCode
+typedef enum WinampSkinBtnID {
+    BTN_PREV,
+    BTN_PLAY,
+    BTN_PAUSE,
+    BTN_STOP,
+    BTN_NEXT,
+    BTN_EJECT,
+    BTN_TOTAL
+} WinampSkinBtnID;
 
 // sliders have a separate bitmap for each state
-typedef struct {
+// tagging struct so that it doesn't show up as unnamed in VSCode
+typedef struct WinampSkinSlider {
     SDL_Texture* tex;
     WinampSkinBtn knob;
     int n_frames;
@@ -67,9 +81,11 @@ typedef struct {
     float val;
 } WinampSkinSlider;
 
-typedef enum { SLD_VOLUME, SLD_BALANCE, SLD_TOTAL } WinampSkinSliderID;
+// tagging enum so that it doesn't show up as unnamed in VSCode
+typedef enum WinampSkinSliderID { SLD_VOLUME, SLD_BALANCE, SLD_TOTAL } WinampSkinSliderID;
 
-typedef struct {
+// tagging struct so that it doesn't show up as unnamed in VSCode
+typedef struct WinampSkin {
     SDL_Texture* tex_main;
     SDL_Texture* tex_cbuttons;
     SDL_Texture* tex_volume;
@@ -156,14 +172,50 @@ fill_silence:
     return;
 }
 
+static void stop_audio(void) {
+    SDL_LockAudioDevice(audio_device);
+    if (stream) {
+        SDL_FreeAudioStream(stream);
+    }
+    stream = NULL;
+    SDL_UnlockAudioDevice(audio_device);
+
+    if (wavbuf) {
+        SDL_FreeWAV(wavbuf);
+    }
+    wavbuf = NULL;
+    wavlen = 0;
+}
+
+static void prev_clickfn(void) {
+    // !!! FIXME: if you spam restart button takes a while after the most recent press to
+    // play the audio - think this is because of multiple calls to convert the entire wav
+    // file
+
+    // both stream clear and put functions are thread-safe - don't need to lock audio device
+    // when passing stream global to them
+    SDL_AudioStreamClear(stream);
+    SDL_AudioStreamPut(stream, wavbuf, wavlen);
+    SDL_AudioStreamFlush(stream);
+}
+
+static void pause_clickfn(void) {
+    paused = paused ? SDL_FALSE : SDL_TRUE;
+    SDL_PauseAudioDevice(audio_device, paused);
+}
+
+static void stop_clickfn(void) { stop_audio(); }
+
 // inlined funtion?
 static SDL_INLINE void init_skin_btn(
         WinampSkinBtn* btn,
         SDL_Texture* tex,
+        ClickFn clickfn,
         const SDL_Rect src_unpressed_rect,
         const SDL_Rect src_pressed_rect,
         const SDL_Rect dest_rect) {
     btn->tex = tex;
+    btn->clickfn = clickfn;
     btn->src_unpressed_rect = src_unpressed_rect;
     btn->src_pressed_rect = src_pressed_rect;
     btn->dest_rect = dest_rect;
@@ -198,7 +250,7 @@ static SDL_INLINE void init_skin_slider(
     const int knob_dest_y = dest_rect.y - (knob_src_pressed_rect.h - dest_rect.h) / 2;
     const SDL_Rect knob_dest_rect
             = {clamped_knob_dest_x, knob_dest_y, knob_src_unpressed_rect.w, knob_src_unpressed_rect.h};
-    init_skin_btn(&slider->knob, tex, knob_src_unpressed_rect, knob_src_pressed_rect, knob_dest_rect);
+    init_skin_btn(&slider->knob, tex, NULL, knob_src_unpressed_rect, knob_src_pressed_rect, knob_dest_rect);
 }
 
 static SDL_Texture* load_texture(const char* fname) {
@@ -223,36 +275,42 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
     init_skin_btn(
             &(skin->buttons[BTN_PREV]),
             skin->tex_cbuttons,
+            &prev_clickfn,
             (SDL_Rect){0, 0, 23, 18},
             (SDL_Rect){0, 18, 23, 18},
             (SDL_Rect){16, 88, 23, 18});
     init_skin_btn(
             &(skin->buttons[BTN_PLAY]),
             skin->tex_cbuttons,
+            NULL,
             (SDL_Rect){23, 0, 23, 18},
             (SDL_Rect){23, 18, 23, 18},
             (SDL_Rect){39, 88, 23, 18});
     init_skin_btn(
             &(skin->buttons[BTN_PAUSE]),
             skin->tex_cbuttons,
+            &pause_clickfn,
             (SDL_Rect){46, 0, 23, 18},
             (SDL_Rect){46, 18, 23, 18},
             (SDL_Rect){62, 88, 23, 18});
     init_skin_btn(
             &(skin->buttons[BTN_STOP]),
             skin->tex_cbuttons,
+            &stop_clickfn,
             (SDL_Rect){69, 0, 23, 18},
             (SDL_Rect){69, 18, 23, 18},
             (SDL_Rect){85, 88, 23, 18});
     init_skin_btn(
             &(skin->buttons[BTN_NEXT]),
             skin->tex_cbuttons,
+            NULL,
             (SDL_Rect){92, 0, 22, 18},
             (SDL_Rect){92, 18, 22, 18},
             (SDL_Rect){108, 88, 22, 18});
     init_skin_btn(
             &(skin->buttons[BTN_EJECT]),
             skin->tex_cbuttons,
+            NULL,
             (SDL_Rect){114, 0, 22, 16},
             (SDL_Rect){114, 16, 22, 16},
             (SDL_Rect){136, 89, 22, 16});
@@ -284,21 +342,6 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
             0.5f);  // balance level starts at 0.5
 
     return SDL_TRUE;
-}
-
-static void stop_audio(void) {
-    SDL_LockAudioDevice(audio_device);
-    if (stream) {
-        SDL_FreeAudioStream(stream);
-    }
-    stream = NULL;
-    SDL_UnlockAudioDevice(audio_device);
-
-    if (wavbuf) {
-        SDL_FreeWAV(wavbuf);
-    }
-    wavbuf = NULL;
-    wavlen = 0;
 }
 
 static SDL_bool load_wav_to_stream(char* fname) {
@@ -465,24 +508,22 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
     SDL_RenderPresent(renderer);
 }
 
-static void handle_slider_mouse(WinampSkinSlider* slider, const SDL_bool pressed, const SDL_Point* pt) {
-    if (pressed && SDL_PointInRect(pt, &slider->dest_rect) && skin.pressed_btn == NULL) {
-        skin.pressed_btn = &slider->knob;
-    }
+static void handle_slider_motion(WinampSkinSlider* slider, const SDL_Point* pt) {
+    // !!! FIXME: having the point in rect as an additional condition feels not very elegant, see if you can clean up
+    // conditions it's done this way though to make sure that slider vals don't get updated with out-of-rect mouse
+    // positions, since the knob can still be pressed when the mouse is outside of the rect if the mouse is being held
+    // down
+    if (skin.pressed_btn == &slider->knob) {
+        const float new_val = (float)(pt->x - slider->dest_rect.x) / slider->dest_rect.w;
 
-    // !!! FIXME: having the point in rect as an additional condition feels not very elegant, see if you can clean up conditions 
-    // it's done this way though to make sure that slider vals don't get updated with out-of-rect mouse positions, since the knob
-    // can still be pressed when the mouse is outside of the rect if the mouse is being held down
-    if (skin.pressed_btn == &slider->knob && SDL_PointInRect(pt, &slider->dest_rect)) {
         const int new_knob_x = pt->x - (slider->knob.dest_rect.w / 2);
         const int min_knob_x = slider->dest_rect.x;
         const int max_knob_x = slider->dest_rect.x + slider->dest_rect.w
                                - slider->knob.dest_rect.w;  // want to pre-calc this before feeding into macro
         slider->knob.dest_rect.x = SDL_clamp(new_knob_x, min_knob_x, max_knob_x);
         SDL_LockAudioDevice(audio_device);
-        slider->val = (float)(pt->x - slider->dest_rect.x) / slider->dest_rect.w;
+        slider->val = SDL_clamp(new_val, 0.0f, 1.0f);
         SDL_UnlockAudioDevice(audio_device);
-        // printf("mouse motion at (%d, %d), percent: %f\n", pt->x, pt->y, slider->val);
     }
 }
 
@@ -494,70 +535,66 @@ static SDL_bool handle_events(WinampSkin* skin) {
                 return SDL_FALSE;
                 break;
             }
-            case SDL_MOUSEBUTTONUP: {
-                skin->pressed_btn = NULL;
-                break;
-            }
 
             case SDL_MOUSEBUTTONDOWN: {
                 // we only care about left clicking
                 if (e.button.button != SDL_BUTTON_LEFT) {
                     break;
                 }
-                // don't need to check for pressed state bc we're in mousebuttondown case
-                // const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
+
                 const SDL_Point pt = {e.button.x, e.button.y};
-
-                // !!! FIXME: find a way to deal with both knobs and buttons without repeating same code in both for loops
-                for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
-                    WinampSkinBtn* btn = &skin->sliders[i].knob;
-
-                    // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
-                    // find a way to avoid this repetition 
-                    if (SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
-                        skin->pressed_btn = btn;
+                if (skin->pressed_btn == NULL) {
+                    for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
+                        WinampSkinBtn* btn = &skin->buttons[i];
+                        if (SDL_PointInRect(&pt, &btn->dest_rect)) {
+                            skin->pressed_btn = btn;
+                            break;
+                        }
                     }
-                }
-
-                for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
-                    WinampSkinBtn* btn = &skin->buttons[i];
-
-                    // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
-                    // find a way to avoid this repetition 
-                    if (SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
-                        skin->pressed_btn = btn;
-                    }
-                    if (skin->pressed_btn == btn) {
-                        switch ((WinampSkinBtnID)i) {
-                            case BTN_PREV:
-                                // !!! FIXME: if you spam restart button takes a while after the most recent press to
-                                // play the audio - think this is because of multiple calls to convert the entire wav
-                                // file
-
-                                // both stream clear and put functions are thread-safe - don't need to lock audio device
-                                // when passing stream global to them
-                                SDL_AudioStreamClear(stream);
-                                SDL_AudioStreamPut(stream, wavbuf, wavlen);
-                                SDL_AudioStreamFlush(stream);
-                                break;
-                            case BTN_PAUSE:
-                                paused = paused ? SDL_FALSE : SDL_TRUE;
-                                SDL_PauseAudioDevice(audio_device, paused);
-                                break;
-                            default:
-                                break;
+                    for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+                        WinampSkinSlider* slider = &skin->sliders[i];
+                        if (SDL_PointInRect(&pt, &slider->dest_rect)) {
+                            skin->pressed_btn = &slider->knob;
+                            break;
                         }
                     }
                 }
+
+                // captures mouse so that while it's pressed, sliders can change value while mouse is outside of window
+                if (skin->pressed_btn) {
+                    SDL_CaptureMouse(SDL_TRUE);
+                }
                 break;
             }
+
+            case SDL_MOUSEBUTTONUP: {
+                if (e.button.button != SDL_BUTTON_LEFT) {
+                    break;
+                }
+
+                if (skin->pressed_btn) {
+                    // release mouse if it was captured on mousebtnup (only would have been captured if pressed_btn was set to non-null val, so can 
+                    // uncapture in this if statement)
+                    SDL_CaptureMouse(SDL_FALSE);
+                    if (skin->pressed_btn->clickfn) {
+
+                        // only call button's clickfn if mouse is released while inside button's rect
+                        const SDL_Point pt = {e.button.x, e.button.y};
+                        if (SDL_PointInRect(&pt, &skin->pressed_btn->dest_rect)) {
+                            skin->pressed_btn->clickfn();
+                        }
+                    }
+                    skin->pressed_btn = NULL;    
+                }
+                break;
+            }
+
             case SDL_MOUSEMOTION: {
                 const SDL_Point pt = {e.motion.x, e.motion.y};
-                const SDL_bool pressed = (e.motion.state & SDL_BUTTON_LMASK) ? SDL_TRUE : SDL_FALSE;
                 for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
-                    handle_slider_mouse(&skin->sliders[i], pressed, &pt);
+                    handle_slider_motion(&skin->sliders[i], &pt);
                 }
-                break;  // without break here, i get bad access exception on loadwav above - running out of memory
+                break;
             }
 
             case SDL_DROPFILE: {
@@ -585,13 +622,13 @@ int main() {
 // have audio play from device based on state of pause button
 // restart current file when restart button pressed (will play or be paused based on pause button state
 
-
 /*
 now, the "pressed" state info is held in the slider struct
-there should only be one button pressed at a time, so that way of storing that state naturally aligns with that requirement
+there should only be one button pressed at a time, so that way of storing that state naturally aligns with that
+requirement
 
-on mousebuttondown: if mouse is within a button's bounds, AND the pressed_btn is currently NULL, set the pressed_btn to that button
-on mousebuttonup: set the pressed_btn to NULL
+on mousebuttondown: if mouse is within a button's bounds, AND the pressed_btn is currently NULL, set the pressed_btn to
+that button on mousebuttonup: set the pressed_btn to NULL
 
 if I click on button x, then drag mouse to another button, button x will remain the pressed one until mousebtnup
 
