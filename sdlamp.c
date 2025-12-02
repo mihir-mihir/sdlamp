@@ -50,7 +50,6 @@ typedef struct {
     SDL_Rect src_unpressed_rect;
     SDL_Rect src_pressed_rect;
     SDL_Rect dest_rect;
-    SDL_bool pressed;
 } WinampSkinBtn;
 
 typedef enum { BTN_PREV, BTN_PLAY, BTN_PAUSE, BTN_STOP, BTN_NEXT, BTN_EJECT, BTN_TOTAL } WinampSkinBtnID;
@@ -60,8 +59,8 @@ typedef struct {
     SDL_Texture* tex;
     WinampSkinBtn knob;
     int n_frames;
-    int x_offset;
-    int y_offset;
+    int frame_x_offset;
+    int frame_y_offset;
     int frame_width;
     int frame_height;
     SDL_Rect dest_rect;
@@ -77,6 +76,8 @@ typedef struct {
     SDL_Texture* tex_balance;
     WinampSkinBtn buttons[BTN_TOTAL];
     WinampSkinSlider sliders[SLD_TOTAL];
+    WinampSkinBtn* pressed_btn;
+
 } WinampSkin;
 
 static SDL_AudioDeviceID audio_device = 0;
@@ -137,11 +138,11 @@ static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) use
         samples[i] *= volume;
     }
 
-    if (balance > 0.5f) { // left samples
+    if (balance > 0.5f) {  // left samples
         for (int i = 0; i < n_samples; i += 2) {
-            samples[i] *= 1.0f - balance; 
+            samples[i] *= 1.0f - balance;
         }
-    } else if (balance < 0.5f) { // right samples
+    } else if (balance < 0.5f) {  // right samples
         for (int i = 0; i < n_samples; i += 2) {
             samples[i + 1] *= balance;
         }
@@ -166,7 +167,6 @@ static SDL_INLINE void init_skin_btn(
     btn->src_unpressed_rect = src_unpressed_rect;
     btn->src_pressed_rect = src_pressed_rect;
     btn->dest_rect = dest_rect;
-    btn->pressed = SDL_FALSE;
 }
 
 // this and above button init method are kind of like constructors in C
@@ -175,28 +175,29 @@ static SDL_INLINE void init_skin_slider(
         SDL_Texture* tex,
         const SDL_Rect knob_src_unpressed_rect,
         const SDL_Rect knob_src_pressed_rect,
-        const int x_offset,
-        const int y_offset,
+        const int frame_x_offset,
+        const int frame_y_offset,
         const int n_frames,
         const int frame_width,
         const int frame_height,
         const SDL_Rect dest_rect,
         const float val) {
     slider->tex = tex;
-    slider->x_offset = x_offset;
-    slider->y_offset = y_offset;
+    slider->frame_x_offset = frame_x_offset;
+    slider->frame_y_offset = frame_y_offset;
     slider->frame_width = frame_width;
     slider->frame_height = frame_height;
     slider->n_frames = n_frames;
     slider->val = val;
     slider->dest_rect = dest_rect;
-    
+
     const int knob_dest_x = (int)dest_rect.x + (slider->val * dest_rect.w) - (knob_src_unpressed_rect.w / 2);
     const int min_knob_dest_x = slider->dest_rect.x;
     const int max_knob_dest_x = slider->dest_rect.x + slider->dest_rect.w - knob_src_unpressed_rect.w;
     const int clamped_knob_dest_x = SDL_clamp(knob_dest_x, min_knob_dest_x, max_knob_dest_x);
     const int knob_dest_y = dest_rect.y - (knob_src_pressed_rect.h - dest_rect.h) / 2;
-    const SDL_Rect knob_dest_rect = {clamped_knob_dest_x, knob_dest_y, knob_src_unpressed_rect.w, knob_src_unpressed_rect.h};
+    const SDL_Rect knob_dest_rect
+            = {clamped_knob_dest_x, knob_dest_y, knob_src_unpressed_rect.w, knob_src_unpressed_rect.h};
     init_skin_btn(&slider->knob, tex, knob_src_unpressed_rect, knob_src_pressed_rect, knob_dest_rect);
 }
 
@@ -217,6 +218,7 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
     skin->tex_cbuttons = load_texture("skinner_atlas/CButtons.bmp");
     skin->tex_volume = load_texture("skinner_atlas/Volume.bmp");
     skin->tex_balance = load_texture("skinner_atlas/Balance.bmp");
+    skin->pressed_btn = NULL;
 
     init_skin_btn(
             &(skin->buttons[BTN_PREV]),
@@ -407,8 +409,9 @@ static void deinit_everything() {
 }
 
 static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
+    const SDL_bool pressed = skin.pressed_btn == btn;
     if (btn->tex == NULL) {
-        if (btn->pressed) {
+        if (pressed) {
             SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
         } else {
             SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
@@ -416,19 +419,20 @@ static void draw_button(SDL_Renderer* renderer, WinampSkinBtn* btn) {
         SDL_RenderFillRect(renderer, &(btn->dest_rect));
         return;
     }
-    SDL_RenderCopy(
-            renderer, btn->tex, btn->pressed ? &btn->src_pressed_rect : &btn->src_unpressed_rect, &btn->dest_rect);
+    SDL_RenderCopy(renderer, btn->tex, pressed ? &btn->src_pressed_rect : &btn->src_unpressed_rect, &btn->dest_rect);
 }
 
 static void draw_slider(SDL_Renderer* renderer, WinampSkinSlider* slider) {
     SDL_assert(slider->val >= 0.0f);
     SDL_assert(slider->val <= 1.0f);
+
+    const SDL_bool pressed = skin.pressed_btn == &slider->knob;
     // draw rects if no texture available
     if (slider->tex == NULL) {
         const int color = (int)(255.0f * slider->val);
         SDL_SetRenderDrawColor(renderer, color, color, color, 255);
         SDL_RenderFillRect(renderer, &slider->dest_rect);
-        if (slider->knob.pressed) {
+        if (pressed) {
             SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
         } else {
             SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
@@ -437,10 +441,10 @@ static void draw_slider(SDL_Renderer* renderer, WinampSkinSlider* slider) {
         return;
     }
     const int frame_idx = (int)(slider->val * (slider->n_frames - 1));
-    const int src_y = slider->y_offset + frame_idx * slider->frame_height;
-    const SDL_Rect src_rect = {slider->x_offset, src_y, slider->dest_rect.w, slider->dest_rect.h};
+    const int src_y = slider->frame_y_offset + frame_idx * slider->frame_height;
+    const SDL_Rect src_rect = {slider->frame_x_offset, src_y, slider->dest_rect.w, slider->dest_rect.h};
     SDL_RenderCopy(renderer, slider->tex, &src_rect, &slider->dest_rect);
-    if (slider->knob.pressed) {
+    if (pressed) {
         SDL_RenderCopy(renderer, slider->tex, &slider->knob.src_pressed_rect, &slider->knob.dest_rect);
     } else {
         SDL_RenderCopy(renderer, slider->tex, &slider->knob.src_unpressed_rect, &slider->knob.dest_rect);
@@ -462,9 +466,14 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
 }
 
 static void handle_slider_mouse(WinampSkinSlider* slider, const SDL_bool pressed, const SDL_Point* pt) {
-    // assert that slider ptr not null here?
-    slider->knob.pressed = (pressed && SDL_PointInRect(pt, &slider->dest_rect)) ? SDL_TRUE : SDL_FALSE;
-    if (slider->knob.pressed) {
+    if (pressed && SDL_PointInRect(pt, &slider->dest_rect) && skin.pressed_btn == NULL) {
+        skin.pressed_btn = &slider->knob;
+    }
+
+    // !!! FIXME: having the point in rect as an additional condition feels not very elegant, see if you can clean up conditions 
+    // it's done this way though to make sure that slider vals don't get updated with out-of-rect mouse positions, since the knob
+    // can still be pressed when the mouse is outside of the rect if the mouse is being held down
+    if (skin.pressed_btn == &slider->knob && SDL_PointInRect(pt, &slider->dest_rect)) {
         const int new_knob_x = pt->x - (slider->knob.dest_rect.w / 2);
         const int min_knob_x = slider->dest_rect.x;
         const int max_knob_x = slider->dest_rect.x + slider->dest_rect.w
@@ -485,15 +494,35 @@ static SDL_bool handle_events(WinampSkin* skin) {
                 return SDL_FALSE;
                 break;
             }
-            case SDL_MOUSEBUTTONUP:
+            case SDL_MOUSEBUTTONUP: {
+                skin->pressed_btn = NULL;
+                break;
+            }
+
             case SDL_MOUSEBUTTONDOWN: {
                 const SDL_bool pressed = (e.button.state == SDL_PRESSED) ? SDL_TRUE : SDL_FALSE;
                 const SDL_Point pt = {e.button.x, e.button.y};
 
+                // !!! FIXME: find a way to deal with both knobs and buttons without repeating same code in both for loops
+                for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+                    WinampSkinBtn* btn = &skin->sliders[i].knob;
+
+                    // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
+                    // find a way to avoid this repetition 
+                    if (pressed && SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
+                        skin->pressed_btn = btn;
+                    }
+                }
+
                 for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
                     WinampSkinBtn* btn = &skin->buttons[i];
-                    btn->pressed = pressed && SDL_PointInRect(&pt, &btn->dest_rect);
-                    if (btn->pressed) {
+
+                    // !!! FIXME: this condition is repeated in the button handling code in the event handling function, 
+                    // find a way to avoid this repetition 
+                    if (pressed && SDL_PointInRect(&pt, &btn->dest_rect) && skin->pressed_btn == NULL) {
+                        skin->pressed_btn = btn;
+                    }
+                    if (skin->pressed_btn == btn) {
                         switch ((WinampSkinBtnID)i) {
                             case BTN_PREV:
                                 // !!! FIXME: if you spam restart button takes a while after the most recent press to
@@ -550,3 +579,18 @@ int main() {
 // load in wav at startup and when new file is selected (drag n drop for now)
 // have audio play from device based on state of pause button
 // restart current file when restart button pressed (will play or be paused based on pause button state
+
+
+/*
+now, the "pressed" state info is held in the slider struct
+there should only be one button pressed at a time, so that way of storing that state naturally aligns with that requirement
+
+on mousebuttondown: if mouse is within a button's bounds, AND the pressed_btn is currently NULL, set the pressed_btn to that button
+on mousebuttonup: set the pressed_btn to NULL
+
+if I click on button x, then drag mouse to another button, button x will remain the pressed one until mousebtnup
+
+
+
+
+*/
