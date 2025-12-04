@@ -2,3 +2,11 @@
 	path = vendored/SDL
 	url = git@github.com:libsdl-org/SDL.git
 	branch = SDL2
+[submodule "vendored/physfs"]
+	path = vendored/physfs
+	url = git@github.com:icculus/physfs.git
+	branch = stable-3.2
+[submodule "vendored/SDL_sound"]
+	path = vendored/SDL_sound
+	url = git@github.com:icculus/SDL_sound.git
+	branch = stable-2.0
