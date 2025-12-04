@@ -7,13 +7,17 @@ add_subdirectory(vendored/physfs)
 add_subdirectory(vendored/SDL EXCLUDE_FROM_ALL)
 
 # Create your game executable target as usual
-add_executable(sdlamp sdlamp.c)
+add_executable(sdlamp
+    sdlamp.c
+    vendored/physfs/extras/physfsrwops.c
+    vendored/physfs/extras/ignorecase.c
+)
 
 target_include_directories(sdlamp PRIVATE
     vendored/SDL/include
     vendored/physfs/src
+    vendored/physfs/extras
 )
 
 # Link to the actual SDL2 library. SDL2::SDL2 is the shared SDL library, SDL2::SDL2-static is the static SDL libarary.
 target_link_libraries(sdlamp PRIVATE SDL2::SDL2-static physfs-static)
-

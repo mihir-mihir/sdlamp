@@ -45,6 +45,8 @@ NOTES FOR REFACTOR VIDEO
 
 #include "SDL.h"
 #include "physfs.h"
+#include "physfsrwops.h"
+#include "ignorecase.h"
 
 typedef void (*ClickFn)(void);
 
@@ -116,119 +118,32 @@ static WinampSkin skin;
 
 static SDL_bool paused = SDL_TRUE;
 
-static const char* physfs_errstr(void) {
-    return PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode());
+static const char* physfs_errstr(void) { return PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()); }
+
+
+static SDL_RWops* open_rw( const char* _fname) {
+    char* fname = SDL_strdup(_fname);
+    if (!fname) {
+        SDL_OutOfMemory();
+        return NULL;
+    }
+    PHYSFSEXT_locateCorrectCase(fname);
+    SDL_RWops* retval = PHYSFSRWOPS_openRead(fname);
+    SDL_free(fname);
+
+    return retval;
 }
 
 #if defined(__GNUC__) || defined(__clang__)
 static void panic_and_abort(const char* title, const char* text) __attribute__((noreturn));  // c/c++ attributes
 #endif
 
+
 static void panic_and_abort(const char* title, const char* text) {
     fprintf(stderr, "PANIC: %s ... %s\n", title, text);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, text, window);
     SDL_Quit();
     exit(1);
-}
-
-typedef struct ZipEntry {
-    char* fname;
-    Uint16 compression_method;
-    Uint32 compressed_size;
-    Uint32 uncompressed_size;
-    Uint32 filepos;
-} ZipEntry;
-
-typedef struct ZipArchive {
-    SDL_RWops* rw;
-    Uint32 num_entries;
-    ZipEntry* entries;
-} ZipArchive;
-
-static void unload_zip_archive(ZipArchive* zip) {
-    if (zip != NULL) {
-        if (zip->rw != NULL) {
-            SDL_RWclose(zip->rw);
-        }
-        SDL_free(zip->entries);
-        SDL_free(zip);
-    }
-}
-static ZipArchive* load_zip_archive(const char* fname) {
-    SDL_RWops* rw = SDL_RWFromFile(fname, "rb");
-    if (rw == NULL) {
-        return NULL;
-    }
-
-    // NOTE: calloc vs malloc
-    // Q: what value does the *entries pointer of retval get initialized to? if it's null, I guess you can use realloc
-    // with a nullptr (as would be done below)?
-    ZipArchive* retval = (ZipArchive*)SDL_calloc(1, sizeof(ZipArchive));
-    if (retval == NULL) {
-        SDL_RWclose(rw);
-        return NULL;
-    }
-
-    retval->rw = rw;
-
-    Uint32 ui32;
-    Uint16 ui16;
-
-    while (SDL_RWread(rw, &ui32, sizeof(ui32), 1) == 1) {
-        ZipEntry entry;
-        SDL_zero(entry);
-
-        Uint16 fname_len;
-        Uint16 extra_len;
-
-        // data is little-endian
-        ui32 = SDL_SwapLE32(ui32);
-        if (ui32 != 0x04034b50) {  // local file header signature     4 bytes  (0x04034b50)
-            break;
-        }
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // version needed to extract       2 bytes
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // general purpose bit flag        2 bytes
-
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // compression method              2 bytes
-        entry.compression_method = SDL_SwapLE16(ui16);
-
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // last mod file time              2 bytes
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // last mod file date              2 bytes
-        SDL_RWread(rw, &ui32, sizeof(ui32), 1);  // crc-32                          4 bytes
-
-        SDL_RWread(rw, &ui32, sizeof(ui32), 1);  // compressed size                 4 bytes
-        entry.compressed_size = SDL_SwapLE32(ui32);
-
-        SDL_RWread(rw, &ui32, sizeof(ui32), 1);  // uncompressed size               4 bytes
-        entry.compressed_size = SDL_SwapLE32(ui32);
-
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // file name length                2 bytes
-        fname_len = SDL_SwapLE16(ui16);
-
-        SDL_RWread(rw, &ui16, sizeof(ui16), 1);  // extra field length              2 byte
-        extra_len = SDL_SwapLE16(ui16);
-
-        // file name (variable size)
-        entry.fname = (char*)SDL_malloc(fname_len + 1);
-        SDL_RWread(rw, entry.fname, fname_len, 1);
-        entry.fname[fname_len] = '\0';
-
-        // extra field (variable size)
-        SDL_RWseek(rw, extra_len, RW_SEEK_CUR);
-
-        entry.filepos = SDL_RWtell(rw);
-
-        SDL_RWseek(rw, entry.compressed_size, RW_SEEK_CUR);
-        // ready for next local file header after this (ignoring encryption fields)
-
-        void* ptr = SDL_realloc(retval->entries, sizeof(ZipEntry) * (retval->num_entries + 1));
-        // would usually want to check if ptr == NULL here (if you run out of memory)
-        retval->entries = ptr;
-        SDL_memcpy(&retval->entries[retval->num_entries], &entry, sizeof(ZipEntry));  // adds to array
-        retval->num_entries++;  // NOTE: can do this bc calloc initialized all members of retval, including num_entries,
-                                // to 0?
-    }
-    return retval;
 }
 
 static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) userdata, Uint8* output_stream, int len) {
@@ -370,43 +285,7 @@ static SDL_Texture* load_texture(SDL_RWops* rw) {
     return texture;  // may be NULL
 }
 
-static SDL_RWops* open_rw(ZipArchive* zip, const char* dirname, const char* fname) {
-    if (zip) {
-        for (Uint32 i = 0; i < zip->num_entries; i++) {
-            const ZipEntry* entry = &zip->entries[i];
-
-            if (SDL_strcasecmp(entry->fname, fname) != 0) {
-                continue;
-            }
-
-            SDL_RWseek(zip->rw, entry->filepos, RW_SEEK_SET);
-            void* data_buf = SDL_malloc(entry->compressed_size);  // NOTE: THIS IS LEAKING MEMORY
-            // should check for failure here but might delete zip wrangling code later
-
-            SDL_assert(SDL_RWread(zip->rw, data_buf, entry->compressed_size, 1) == 1);
-            // should also check for failure here:
-            // if (entry->compression_method != 0) { push data through zlib }
-
-            SDL_assert(entry->compression_method == 0);
-
-            // returned rwops: read from block of memory, not file
-            // DBGNOTE: for some reason the uncompressed size is zero for all the entries 
-            return SDL_RWFromConstMem(data_buf, entry->compressed_size);
-        }
-        return NULL;
-    }
-
-    // we don't have a zip file, read from disk
-    const size_t fullpath_len = SDL_strlen(dirname) + SDL_strlen(fname) + 2;
-    char* fullpath = (char*)SDL_malloc(fullpath_len);
-    SDL_snprintf(fullpath, fullpath_len, "%s/%s", dirname, fname);  // !!! FIXME: filename case is a problem on unix
-    SDL_RWops* retval = SDL_RWFromFile(fullpath, "rb");
-    SDL_free(fullpath);
-    return retval;
-}
-
-static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) fname) {
-
+static void free_skin(WinampSkin* skin) {
     if (skin->tex_main) {
         SDL_DestroyTexture(skin->tex_main);
     }
@@ -421,14 +300,21 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
     }
 
     SDL_zerop(skin);  // zerop lets you pass in pointer instead of dereferenced ptr
+}
 
-    ZipArchive* zip = load_zip_archive(fname);
+static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fname) {
 
-    skin->tex_main = load_texture(open_rw(zip, fname, "Main.bmp"));
-    skin->tex_cbuttons = load_texture(open_rw(zip, fname, "CButtons.bmp"));
-    skin->tex_volume = load_texture(open_rw(zip, fname, "Volume.bmp"));
-    skin->tex_balance = load_texture(open_rw(zip, fname, "Balance.bmp"));
-    unload_zip_archive(zip);
+    free_skin(skin);
+    if (!PHYSFS_mount(fname, NULL, 1)) {
+        return; // ok if can't load from file
+    }
+
+    skin->tex_main = load_texture(open_rw("Main.bmp"));
+    skin->tex_cbuttons = load_texture(open_rw("CButtons.bmp"));
+    skin->tex_volume = load_texture(open_rw("Volume.bmp"));
+    skin->tex_balance = load_texture(open_rw("Balance.bmp"));
+
+    PHYSFS_unmount(fname);
 
     skin->pressed_btn = NULL;
 
@@ -500,8 +386,6 @@ static SDL_bool load_skin(WinampSkin* skin, const char* __attribute__((unused)) 
             15,  // frame height
             (SDL_Rect){177, 57, 38, 13},
             0.5f);  // balance level starts at 0.5
-
-    return SDL_TRUE;
 }
 
 static SDL_bool load_wav_to_stream(char* fname) {
@@ -603,7 +487,7 @@ static void init_everything(int argc, char** argv) {
 }
 
 static void deinit_everything() {
-    // !!! FIXME: free(skin)
+    free_skin(&skin);
     SDL_FreeWAV(wavbuf);
     SDL_CloseAudioDevice(audio_device);
 
@@ -767,7 +651,7 @@ static SDL_bool handle_events(WinampSkin* skin) {
                     load_skin(skin, e.drop.file);
                 } else {
                     load_wav_to_stream(e.drop.file);
-                } 
+                }
                 SDL_free(e.drop.file);
                 break;
             }
