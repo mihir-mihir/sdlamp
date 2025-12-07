@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(sdlamp)
 
 add_subdirectory(vendored/physfs)
+add_subdirectory(vendored/SDL_sound)
 
 # Create an option to switch between a system sdl library and a vendored sdl library
 add_subdirectory(vendored/SDL EXCLUDE_FROM_ALL)
@@ -17,7 +18,8 @@ target_include_directories(sdlamp PRIVATE
     vendored/SDL/include
     vendored/physfs/src
     vendored/physfs/extras
+    vendored/SDL_sound/src
 )
 
 # Link to the actual SDL2 library. SDL2::SDL2 is the shared SDL library, SDL2::SDL2-static is the static SDL libarary.
-target_link_libraries(sdlamp PRIVATE SDL2::SDL2-static physfs-static)
+target_link_libraries(sdlamp PRIVATE SDL2::SDL2-static physfs-static SDL2_sound-static)
