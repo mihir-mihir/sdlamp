@@ -1,8 +1,6 @@
-/* TODOS
-[x] add and hook up title bar buttons
-[x] make click functions for the titlebar buttons
-[ ] make new array of buttons and new slider for winshade mode
-[ ] hook up windhade mode buttons
+/* fixes
+- inconsistencies using skin global vs passing a pointer to it in functions
+- lots of code duplication in handling events, hit testing, and drawing (search for if (winshade_mode))
 
 */
 
@@ -25,6 +23,7 @@ typedef struct WinampSkinBtn {
 
 // tagging enum so that it doesn't show up as unnamed in VSCode
 typedef enum WinampSkinBtnID {
+    BTN_WINAMP,
     BTN_MINIMIZE,
     BTN_WINSHADE,
     BTN_CLOSE,
@@ -36,7 +35,6 @@ typedef enum WinampSkinBtnID {
     BTN_EJECT,
     BTN_TOTAL
 } WinampSkinBtnID;
-
 // sliders have a separate bitmap for each state
 // tagging struct so that it doesn't show up as unnamed in VSCode
 typedef struct WinampSkinSlider {
@@ -209,26 +207,39 @@ static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) use
 }
 
 SDL_HitTestResult SDLCALL hittest_callback(SDL_Window* window, const SDL_Point* area, void* data) {
-    if (area-> y >= 14) {
+    if (area->y >= 14) {
         return SDL_HITTEST_NORMAL;
     }
-    for (int btn_idx = BTN_MINIMIZE; btn_idx <= BTN_CLOSE; btn_idx++) {
-        const SDL_Rect dest_rect = skin.buttons[btn_idx].dest_rect;
-        if (SDL_PointInRect(area, &dest_rect)) {
+
+    // check all buttons in winshade mode, only titlebar buttons otherwise (in winshade mode all buttons are titlebar
+    // buttons)
+    if (winshade_mode) {
+        for (int i = 0; i < (int)SDL_arraysize(skin.winshade_buttons); i++) {
+            const SDL_Rect dest_rect = skin.winshade_buttons[i].dest_rect;
+            if (SDL_PointInRect(area, &dest_rect)) {
+                return SDL_HITTEST_NORMAL;
+            }
+        }
+        if (SDL_PointInRect(area, &skin.winshade_slider.dest_rect)) {
             return SDL_HITTEST_NORMAL;
+        }
+    } else {
+        for (int btn_idx = BTN_WINAMP; btn_idx <= BTN_CLOSE; btn_idx++) {
+            const SDL_Rect dest_rect = skin.buttons[btn_idx].dest_rect;
+            if (SDL_PointInRect(area, &dest_rect)) {
+                return SDL_HITTEST_NORMAL;
+            }
         }
     }
 
-    return (skin.pressed_btn == NULL) ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL ;
-
+    return (skin.pressed_btn == NULL) ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
 }
 
-static void minimize_clickfn(void) {
-    SDL_MinimizeWindow(window);
-}
+static void minimize_clickfn(void) { SDL_MinimizeWindow(window); }
 
 static void winshade_clickfn(void) {
     winshade_mode = (winshade_mode) ? SDL_FALSE : SDL_TRUE;
+    SDL_SetWindowSize(window, 275, (winshade_mode ? 14 : 116));
 }
 
 static void close_clickfn(void) {
@@ -357,6 +368,13 @@ static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fnam
 
     // non winshade mode buttons/sliders
     init_skin_btn(
+            &skin->buttons[BTN_WINAMP],
+            skin->tex_titlebar,
+            NULL,
+            (SDL_Rect){0, 0, 9, 9},
+            (SDL_Rect){0, 9, 9, 9},
+            (SDL_Rect){6, 3, 9, 9});
+    init_skin_btn(
             &skin->buttons[BTN_MINIMIZE],
             skin->tex_titlebar,
             &minimize_clickfn,
@@ -377,18 +395,18 @@ static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fnam
             &close_clickfn,
             (SDL_Rect){18, 0, 9, 9},
             (SDL_Rect){18, 9, 9, 9},
-            (SDL_Rect){264, 3, 9, 9});    
+            (SDL_Rect){264, 3, 9, 9});
     init_skin_btn(
             &(skin->buttons[BTN_PREV]),
             skin->tex_cbuttons,
-            &prev_clickfn,
+            NULL,
             (SDL_Rect){0, 0, 23, 18},
             (SDL_Rect){0, 18, 23, 18},
             (SDL_Rect){16, 88, 23, 18});
     init_skin_btn(
             &(skin->buttons[BTN_PLAY]),
             skin->tex_cbuttons,
-            NULL,
+            &prev_clickfn,
             (SDL_Rect){23, 0, 23, 18},
             (SDL_Rect){23, 18, 23, 18},
             (SDL_Rect){39, 88, 23, 18});
@@ -447,7 +465,91 @@ static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fnam
             (SDL_Rect){177, 57, 38, 13},
             0.5f);  // balance level starts at 0.5
 
-    // TODO: winshade mode buttons/slider
+    // winshade mode buttons/slider
+    init_skin_btn(
+            &skin->winshade_buttons[BTN_WINAMP],
+            skin->tex_titlebar,
+            NULL,
+            (SDL_Rect){0, 0, 9, 9},
+            (SDL_Rect){0, 9, 9, 9},
+            (SDL_Rect){6, 3, 9, 9});
+    init_skin_btn(
+            &skin->winshade_buttons[BTN_MINIMIZE],
+            skin->tex_titlebar,
+            &minimize_clickfn,
+            (SDL_Rect){9, 0, 9, 9},
+            (SDL_Rect){9, 9, 9, 9},
+            (SDL_Rect){244, 3, 9, 9});
+
+    init_skin_btn(
+            &skin->winshade_buttons[BTN_WINSHADE],
+            skin->tex_titlebar,
+            &winshade_clickfn,
+            (SDL_Rect){0, 27, 9, 9},
+            (SDL_Rect){9, 27, 9, 9},
+            (SDL_Rect){254, 3, 9, 9});
+    init_skin_btn(
+            &skin->winshade_buttons[BTN_CLOSE],
+            skin->tex_titlebar,
+            &close_clickfn,
+            (SDL_Rect){18, 0, 9, 9},
+            (SDL_Rect){18, 9, 9, 9},
+            (SDL_Rect){264, 3, 9, 9});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_PREV]),
+            skin->tex_titlebar,
+            &prev_clickfn,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){168, 2, 8, 10});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_PLAY]),
+            skin->tex_titlebar,
+            NULL,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){176, 2, 10, 10});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_PAUSE]),
+            skin->tex_titlebar,
+            &pause_clickfn,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){186, 2, 9, 10});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_STOP]),
+            skin->tex_titlebar,
+            &stop_clickfn,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){195, 2, 9, 10});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_NEXT]),
+            skin->tex_titlebar,
+            NULL,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){204, 2, 11, 10});
+    init_skin_btn(
+            &(skin->winshade_buttons[BTN_EJECT]),
+            skin->tex_titlebar,
+            NULL,
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){0, 0, 0, 0},
+            (SDL_Rect){215, 2, 10, 10});
+
+    init_skin_slider(
+            &skin->winshade_slider,
+            skin->tex_titlebar,
+            (SDL_Rect){17, 36, 3, 7},
+            (SDL_Rect){17, 36, 3, 7},
+            0,
+            36,
+            1,
+            17,
+            7,
+            (SDL_Rect){226, 4, 17, 7},
+            0.0f);  // pos slider starts at 0.0
 }
 
 static void init_everything(int argc, char** argv) {
@@ -572,18 +674,44 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
 
     SDL_Rect tbar_src_rect;
     tbar_src_rect.x = 27;
-    tbar_src_rect.y = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? 0 : 15;
+    if (!winshade_mode) {
+        tbar_src_rect.y = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? 0 : 15;
+    } else {
+        tbar_src_rect.y = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? 29 : 42;
+
+        // handling which bitmap to use for winamp mode slider knob
+        const int winshade_slider_pixelpos = (int)(skin->winshade_slider.val * (skin->winshade_slider.frame_width - 1));
+        if (winshade_slider_pixelpos < 7) {
+            skin->winshade_slider.knob.src_unpressed_rect.x = 17;
+            skin->winshade_slider.knob.src_pressed_rect.x = 17;
+        } else if (winshade_slider_pixelpos < 10) {
+            skin->winshade_slider.knob.src_unpressed_rect.x = 20;
+            skin->winshade_slider.knob.src_pressed_rect.x = 20;
+        } else if (winshade_slider_pixelpos < 17) {
+            skin->winshade_slider.knob.src_unpressed_rect.x = 23;
+            skin->winshade_slider.knob.src_pressed_rect.x = 23;
+        } 
+    }
     tbar_src_rect.w = 275;
     tbar_src_rect.h = 14;
 
     SDL_Rect tbar_dest_rect = {0, 0, 275, 14};
-    // SDL_RenderCopy(renderer, skin->tex_titlebar, &tbar_src_rect, &tbar_dest_rect);
+    SDL_RenderCopy(renderer, skin->tex_titlebar, &tbar_src_rect, &tbar_dest_rect);
 
-    for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
-        draw_button(renderer, &skin->buttons[i]);
+    if (winshade_mode) {
+        for (int i = 0; i < (int)SDL_arraysize(skin->winshade_buttons); i++) {
+            draw_button(renderer, &skin->winshade_buttons[i]);
+        }
+        draw_slider(renderer, &skin->winshade_slider);
+
+    } else {
+        for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
+            draw_button(renderer, &skin->buttons[i]);
+        }
+        for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+            draw_slider(renderer, &skin->sliders[i]);
+        }
     }
-    draw_slider(renderer, &skin->sliders[SLD_VOLUME]);
-    draw_slider(renderer, &skin->sliders[SLD_BALANCE]);
 
     SDL_RenderPresent(renderer);
 }
@@ -624,18 +752,32 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
                 const SDL_Point pt = {e.button.x, e.button.y};
                 if (skin->pressed_btn == NULL) {
-                    for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
-                        WinampSkinBtn* btn = &skin->buttons[i];
-                        if (SDL_PointInRect(&pt, &btn->dest_rect)) {
-                            skin->pressed_btn = btn;
+                    if (winshade_mode) {
+                        for (int i = 0; i < (int)SDL_arraysize(skin->winshade_buttons); i++) {
+                            WinampSkinBtn* btn = &skin->winshade_buttons[i];
+                            if (SDL_PointInRect(&pt, &btn->dest_rect)) {
+                                skin->pressed_btn = btn;
+                                break;
+                            }
+                        }
+                        if (SDL_PointInRect(&pt, &skin->winshade_slider.dest_rect)) {
+                            skin->pressed_btn = &skin->winshade_slider.knob;
                             break;
                         }
-                    }
-                    for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
-                        WinampSkinSlider* slider = &skin->sliders[i];
-                        if (SDL_PointInRect(&pt, &slider->dest_rect)) {
-                            skin->pressed_btn = &slider->knob;
-                            break;
+                    } else {
+                        for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
+                            WinampSkinBtn* btn = &skin->buttons[i];
+                            if (SDL_PointInRect(&pt, &btn->dest_rect)) {
+                                skin->pressed_btn = btn;
+                                break;
+                            }
+                        }
+                        for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+                            WinampSkinSlider* slider = &skin->sliders[i];
+                            if (SDL_PointInRect(&pt, &slider->dest_rect)) {
+                                skin->pressed_btn = &slider->knob;
+                                break;
+                            }
                         }
                     }
                 }
@@ -671,10 +813,15 @@ static SDL_bool handle_events(WinampSkin* skin) {
 
             case SDL_MOUSEMOTION: {
                 const SDL_Point pt = {e.motion.x, e.motion.y};
-                for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
-                    handle_slider_motion(&skin->sliders[i], &pt);
+                if (winshade_mode) {
+                    handle_slider_motion(&skin->winshade_slider, &pt);
+                    break;
+                } else {
+                    for (int i = 0; i < (int)SDL_arraysize(skin->sliders); i++) {
+                        handle_slider_motion(&skin->sliders[i], &pt);
+                    }
+                    break;
                 }
-                break;
             }
 
             case SDL_DROPFILE: {
