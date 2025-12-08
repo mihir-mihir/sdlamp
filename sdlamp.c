@@ -1,46 +1,9 @@
-/*
-NOTES FOR POST 16:20 AUDIO STREAMS VIDEO
------------------------------------------
-- general idea: implementing volume control involves making changes to the audio data in real time
-- going to feed audio device a little bit at a time instead of dumping the entire audio file in the queue
-- manipulating the audio will get complicated if allowed to use a lot of different formats,
-    fix a single format to work with
-- SDL_GetQueuedAudioSize -- how many bytes have I given to SDL to give to the audio device by calling SDL_QueueAudio
-- if less than 8 kB that we've given, need to feed more data (give 32 kB at a time for now? or however much is left if
-less)
-- SDL_assert
-- rewind button logic (clear queue, update wavpos), pause button logic
-- SDL_AudioStream global - init to NULL to be explicit
-    - this is how we "fake" desired audiospec?
-    - now only the stream needs to be global
+/* TODOS
+[x] add and hook up title bar buttons
+[x] make click functions for the titlebar buttons
+[ ] make new array of buttons and new slider for winshade mode
+[ ] hook up windhade mode buttons
 
-NOTES FOR VOLUME CONTROL VIDEO
---------------------------------
-- sdl mouse motion event
-- sample frames - 2 samples make up a frame in stereo, we are just going to work on all samples without worrying about
-frames
-- in converted_buf, each sample is a float (4 bytes) - remember converted_buf is type Uint8* though, so need to cast to
-float* to go sample by sample in for loop
-
-
-NOTES FOR BALANCE CONTROL VIDEO (5)
-------------------------------------
-- goto failed (gotos in c vs c++)
-- stop audio instead of exiting in some cases?
-
-NOTES FOR WINAMP INTRO VIDEO
------------------------------
-- surfaces cpu, textures gpu, utility for creating texture from surface (then free the surface)
-- SDL_RenderCopy
-- create load_texture subroutine
-
-NOTES FOR REFACTOR VIDEO
--------------------------
-- using pointer to winampskin in load_skin method bc you can't use references (&) in C,
-    only way to "pass by reference" is with pointers
-- SDL_arraysize macro
-- draw_frame(), draw_button()
-- converted_buffer array is static bc in old times was poor practice to put 2kB on the stack
 */
 
 #include "SDL.h"
@@ -62,6 +25,9 @@ typedef struct WinampSkinBtn {
 
 // tagging enum so that it doesn't show up as unnamed in VSCode
 typedef enum WinampSkinBtnID {
+    BTN_MINIMIZE,
+    BTN_WINSHADE,
+    BTN_CLOSE,
     BTN_PREV,
     BTN_PLAY,
     BTN_PAUSE,
@@ -96,7 +62,9 @@ typedef struct WinampSkin {
     SDL_Texture* tex_balance;
     SDL_Texture* tex_titlebar;
     WinampSkinBtn buttons[BTN_TOTAL];
+    WinampSkinBtn winshade_buttons[BTN_TOTAL];
     WinampSkinSlider sliders[SLD_TOTAL];
+    WinampSkinSlider winshade_slider;
     WinampSkinBtn* pressed_btn;
 
 } WinampSkin;
@@ -116,6 +84,8 @@ static Uint32 available_samples;
 static Uint32 sample_pos;
 
 static SDL_bool paused = SDL_TRUE;
+
+static SDL_bool winshade_mode = SDL_FALSE;
 
 // THIS GLOBAL STATE IS NOT PERMANAENT
 // static variables in C are initialized to zero when declared
@@ -239,7 +209,33 @@ static void SDLCALL feed_audio_device_callback(void* __attribute__((unused)) use
 }
 
 SDL_HitTestResult SDLCALL hittest_callback(SDL_Window* window, const SDL_Point* area, void* data) {
-    return (area->y < 14) ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
+    if (area-> y >= 14) {
+        return SDL_HITTEST_NORMAL;
+    }
+    for (int btn_idx = BTN_MINIMIZE; btn_idx <= BTN_CLOSE; btn_idx++) {
+        const SDL_Rect dest_rect = skin.buttons[btn_idx].dest_rect;
+        if (SDL_PointInRect(area, &dest_rect)) {
+            return SDL_HITTEST_NORMAL;
+        }
+    }
+
+    return (skin.pressed_btn == NULL) ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL ;
+
+}
+
+static void minimize_clickfn(void) {
+    SDL_MinimizeWindow(window);
+}
+
+static void winshade_clickfn(void) {
+    winshade_mode = (winshade_mode) ? SDL_FALSE : SDL_TRUE;
+}
+
+static void close_clickfn(void) {
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = SDL_QUIT;
+    SDL_PushEvent(&e);
 }
 
 static void prev_clickfn(void) {
@@ -359,6 +355,29 @@ static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fnam
 
     skin->pressed_btn = NULL;
 
+    // non winshade mode buttons/sliders
+    init_skin_btn(
+            &skin->buttons[BTN_MINIMIZE],
+            skin->tex_titlebar,
+            &minimize_clickfn,
+            (SDL_Rect){9, 0, 9, 9},
+            (SDL_Rect){9, 9, 9, 9},
+            (SDL_Rect){244, 3, 9, 9});
+
+    init_skin_btn(
+            &skin->buttons[BTN_WINSHADE],
+            skin->tex_titlebar,
+            &winshade_clickfn,
+            (SDL_Rect){0, 18, 9, 9},
+            (SDL_Rect){9, 18, 9, 9},
+            (SDL_Rect){254, 3, 9, 9});
+    init_skin_btn(
+            &skin->buttons[BTN_CLOSE],
+            skin->tex_titlebar,
+            &close_clickfn,
+            (SDL_Rect){18, 0, 9, 9},
+            (SDL_Rect){18, 9, 9, 9},
+            (SDL_Rect){264, 3, 9, 9});    
     init_skin_btn(
             &(skin->buttons[BTN_PREV]),
             skin->tex_cbuttons,
@@ -427,6 +446,8 @@ static void load_skin(WinampSkin* skin, const char* __attribute__((unused)) fnam
             15,  // frame height
             (SDL_Rect){177, 57, 38, 13},
             0.5f);  // balance level starts at 0.5
+
+    // TODO: winshade mode buttons/slider
 }
 
 static void init_everything(int argc, char** argv) {
@@ -447,7 +468,8 @@ static void init_everything(int argc, char** argv) {
     // we're done with it
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
-    window = SDL_CreateWindow("Hello SDL", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 275, 130, SDL_WINDOW_BORDERLESS);
+    window = SDL_CreateWindow(
+            "Hello SDL", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 275, 116, SDL_WINDOW_BORDERLESS);
     if (!window) {
         panic_and_abort("SDL_CreateWindow failed", SDL_GetError());
     }
@@ -545,6 +567,9 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
+    SDL_Rect main_dest_rect = {0, 0, 275, 116};
+    SDL_RenderCopy(renderer, skin->tex_main, NULL, &main_dest_rect);
+
     SDL_Rect tbar_src_rect;
     tbar_src_rect.x = 27;
     tbar_src_rect.y = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? 0 : 15;
@@ -552,10 +577,7 @@ static void draw_frame(SDL_Renderer* renderer, WinampSkin* skin) {
     tbar_src_rect.h = 14;
 
     SDL_Rect tbar_dest_rect = {0, 0, 275, 14};
-    SDL_RenderCopy(renderer, skin->tex_titlebar, &tbar_src_rect, &tbar_dest_rect);
-
-    SDL_Rect main_dest_rect = {0, 14, 275, 116};
-    SDL_RenderCopy(renderer, skin->tex_main, NULL, &main_dest_rect);
+    // SDL_RenderCopy(renderer, skin->tex_titlebar, &tbar_src_rect, &tbar_dest_rect);
 
     for (int i = 0; i < (int)SDL_arraysize(skin->buttons); i++) {
         draw_button(renderer, &skin->buttons[i]);
